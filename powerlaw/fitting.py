@@ -12,6 +12,7 @@ class ModelSpec(ABC):
 
     par0: List[float]  # Initial parameters
     par_names: List[str]  # Parameter names
+    name: str   # name of functional relation
 
     @staticmethod
     @abstractmethod
@@ -38,6 +39,7 @@ class ShiftedPowerLaw(ModelSpec):
 
     par0 = [0., 1., 1.]
     par_names = ["y*", "c", "r"]
+    name = "Y-Shifted Power Law"
 
 
 class ShiftedPowerLaw2(ModelSpec):
@@ -53,6 +55,7 @@ class ShiftedPowerLaw2(ModelSpec):
 
     par0 = [0., 1., 1.]
     par_names = ["y*", "logc", "r"]
+    name = "Y-Shifted Power Law"
 
 
 class XShiftedPowerLaw(ModelSpec):
@@ -64,6 +67,7 @@ class XShiftedPowerLaw(ModelSpec):
 
     par0 = [0., 1., .25]
     par_names = ["x*", "c", "r"]
+    name = "X-Shifted Power Law"
 
     @staticmethod
     def bounds(x, y):
@@ -85,6 +89,7 @@ class XShiftedPowerLaw2(ModelSpec):
 
     par0 = [0., 1., .25]
     par_names = ["x*", "logc", "r"]
+    name = "X-Shifted Power Law"
 
     @staticmethod
     def bounds(x, y):
@@ -106,6 +111,7 @@ class ShiftedLogarithm(ModelSpec):
 
     par_names = ["y*", "a"]
     par0 = [0., 1.]
+    name = "Y-Shifted Logarithm"
 
 
 class Cubic(ModelSpec):
@@ -118,6 +124,7 @@ class Cubic(ModelSpec):
     # Inherited bounds (unbounded)
     par0 = [0.1, 0.1, 0.1, 0.1]
     par_names = ["a0", "a1", "a2", "a3"]
+    name = "Cubic Polynomial"
 
 
 class ShiftedExponential(ModelSpec):
@@ -129,6 +136,7 @@ class ShiftedExponential(ModelSpec):
 
     par0 = [1., 1., 1.]
     par_names = "y*", "a", "r"
+    name = "Y-Shifted Exponential"
 
 
 class DoubleExponential(ModelSpec):
@@ -144,15 +152,7 @@ class DoubleExponential(ModelSpec):
 
     par0 = [1., 1., 4., 4.]
     par_names = ["y*", "loga", "r", "b"]
-
-    @staticmethod
-    def bounds(x, y):
-        return [
-            (0., None),
-            (-50, 50),
-            (0., 50.),
-            (.1, 50.),
-        ]
+    name = "Y-Shifted Double Exponential"
 
 
 class DoubleShiftedPowerLaw(ModelSpec):
@@ -168,15 +168,16 @@ class DoubleShiftedPowerLaw(ModelSpec):
 
     par0 = [0.1, .1, 0.1, 1.]
     par_names = ["x*", "y*", "logc", "r"]
+    name = "XY-Shifted Power Law"
 
     @staticmethod
     def bounds(x, y):
         eps = 1e-8
         return [
-            (None, None),
             (None, float(x.min() - eps)),
-            (-30., 30.),
-            (-30., 30.)
+            (None, None),
+            (None, None),
+            (None, None),
         ]
 
 
@@ -204,13 +205,16 @@ class FitResult:
             report = {k + "_stderr": v for k, v in named.items()}
 
             # Some additional diagnostics
-            eigvals = np.linalg.eigvals(self.pcov)
-            abs_eigvals = np.abs(eigvals)
-            min_eigval, max_eigval = abs_eigvals.min(), abs_eigvals.max()
-            report["min_eigenval"] = min_eigval
-            report["max_eigenval"] = max_eigval
-            report["condition_number"] = max_eigval / min_eigval
-            return report
+            try:
+                eigvals = np.linalg.eigvals(self.pcov)
+                abs_eigvals = np.abs(eigvals)
+                min_eigval, max_eigval = abs_eigvals.min(), abs_eigvals.max()
+                report["min_eigenval"] = min_eigval
+                report["max_eigenval"] = max_eigval
+                report["condition_number"] = max_eigval / min_eigval
+                return report
+            except:
+                return {}
         else:
             return {}
 
@@ -339,21 +343,33 @@ def odr_fit(x, y, model, method="L-BFGS-B", rel_noise=False, par0=None):
     return FitResult(f, model, popt, None, None, res)
 
 
-def logspace_r2(y_true, y_pred):
+def r2_score(y_true, y_pred):
     """
-    Metric - R2 in logspace.
-    Note - this is not in the *shifted space* which requires model parameters.
+    Metric - R2 in linspace.
     """
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     ss_res = np.sum((y_true - y_pred) ** 2)
     return 1. - (ss_res / ss_tot)
 
 
+def logspace_r2(y_true, y_pred):
+    """
+    Metric - R2 in logspace.
+    Note - this is not in the *shifted space* which requires model parameters.
+    """
+    l_pred = np.log(y_pred)
+    l_true = np.log(y_true)
+    ss_tot = np.sum((l_true - np.mean(l_true)) ** 2)
+    ss_res = np.sum((l_true - l_pred) ** 2)
+    return 1. - (ss_res / ss_tot)
+
+
+def rmse(y_true, y_pred):
+    """Error standard deviation (root mean squared error)"""
+    return np.std(y_true - y_pred)
+
+
 def normal_log_likelihood(y_true, y_mu, y_sig):
     # Compute the negative log likelihood for Gaussian predictions
     nll = 0.5 * np.log(2 * np.pi * y_sig**2) + 0.5 * ((y_true - y_mu)**2) / y_sig**2
     return -np.sum(nll)
-
-
-
-

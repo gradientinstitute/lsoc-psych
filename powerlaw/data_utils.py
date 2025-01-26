@@ -5,27 +5,35 @@ from collections import namedtuple
 
 
 
+
 def load_dfs(msize, data_path):
     """Data Loading - updated to 24/1/2024 format"""
 
-    with open(f'data/pythia-test-losses-new-seed-1024.pkl', 'rb') as file:
-        df_loss = pickle.load(file)
+    if load_dfs.df_loss is None:
+        with open(f'data/pythia-test-losses-new-seed-1024.pkl', 'rb') as file:
+            df_loss = pickle.load(file)
 
-    with open(f'data/pythia-pile-subset-llcs.pkl', 'rb') as file:
-        df_llc = pickle.load(file)
+        with open(f'data/pythia-pile-subset-llcs.pkl', 'rb') as file:
+            df_llc = pickle.load(file)
 
-    # LLC on full pile came as a "patch"
-    with open(f'data/pythia-full-llc.pkl', 'rb') as file:
-        df_full_llc = pickle.load(file)
 
-    df_llc.set_index('Step', inplace=True)
-    df_loss.set_index('Step', inplace=True)
-    df_full_llc.set_index('Step', inplace=True)
+        # LLC on full pile came as a "patch"
+        with open(f'data/pythia-full-llc.pkl', 'rb') as file:
+            df_full_llc = pickle.load(file)
 
-    # Patch "full llc" into the results:
-    renames = {c:c+"-full" for c in df_full_llc.columns}
-    df_full_llc.rename(columns=renames, inplace=True)
-    df_llc = df_llc.join(df_full_llc)
+        df_llc.set_index('Step', inplace=True)
+        df_loss.set_index('Step', inplace=True)
+        df_full_llc.set_index('Step', inplace=True)
+
+        # Patch "full llc" into the results:
+        renames = {c:c+"-full" for c in df_full_llc.columns}
+        df_full_llc.rename(columns=renames, inplace=True)
+        df_llc = df_llc.join(df_full_llc)
+        load_dfs.df_loss = df_loss
+        load_dfs.df_llc = df_llc
+    else:
+        df_loss = load_dfs.df_loss
+        df_llc = load_dfs.df_llc
 
     sizes = set(c.split("-")[1] for c in df_loss.columns if "-" in c)
     assert msize in sizes, sizes
@@ -38,6 +46,9 @@ def load_dfs(msize, data_path):
 
     # Note these may have NANs now...
     return task_llc / 100., task_loss
+# Cache across calls
+load_dfs.df_loss = None
+load_dfs.df_llc = None
 
 
 
