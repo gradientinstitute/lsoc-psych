@@ -4,54 +4,110 @@ import numpy as np
 from collections import namedtuple
 
 
+# Load these once and keep in memory
+df_llc_sparse = None
+df_llc_dense = None
+df_loss_sparse = None
+df_loss_dense = None
 
 
-def load_dfs(msize, data_path):
-    """Data Loading - updated to 24/1/2024 format"""
+def load_dfs(code, data_path):
+    """Data Loading.
+    - updated to 28/1/2024 format with dense results specifically for pythia-410m.
+    - (this shall be "410m-dense")
+    - updated to 24/1/2024 format
+    """
 
-    if load_dfs.df_loss is None:
-        with open(f'data/pythia-test-losses-new-seed-1024.pkl', 'rb') as file:
-            df_loss = pickle.load(file)
+    # We are in a half-way kind of state where some models are dense
+    # and others are sparse
+    global df_loss_sparse, df_llc_sparse
+    global df_loss_dense, df_llc_dense
 
-        with open(f'data/pythia-pile-subset-llcs.pkl', 'rb') as file:
-            df_llc = pickle.load(file)
+    if df_loss_sparse is None:
+        # Load all the dataframes on first use
+
+        # Sparse losses - contains results for 1B but doesn't contain std
+        with open(f'{data_path}/pythia-test-losses-new-seed-1024.pkl',
+                  'rb') as file:
+            df_loss_sparse = pickle.load(file)
+            df_loss_sparse.set_index('Step', inplace=True)
+
+        # Dense test losses and std dev for all models and subsets
+        # (including full pile) up to 410m
+        with open(f'{data_path}/pythia-test-losses-dense-new-seed.pkl', 'rb') as file:
+            df_loss_dense = pickle.load(file)
+            df_loss_dense.set_index('Step', inplace=True)
+
+        # Pile subset LLCs for sparse checkpoints and models up to 1b
+        with open(f'{data_path}/pythia-pile-subset-llcs.pkl', 'rb') as file:
+            df_llc_sparse = pickle.load(file)
+            df_llc_sparse.set_index('Step', inplace=True)
+
+        # Full pile LLCs for sparse checkpoints for models up to 1b
+        with open(f'{data_path}/pythia-full-llc.pkl', 'rb') as file:
+            df_llc_sparse_patch = pickle.load(file)
+            df_llc_sparse_patch.set_index('Step', inplace=True)
+
+            # Patch "full llc" into the results:
+            renames = {c:c+"-full" for c in df_llc_sparse_patch.columns}
+            df_llc_sparse_patch.rename(columns=renames, inplace=True)
+            df_llc_sparse = df_llc_sparse.join(df_llc_sparse_patch)
+
+        # Dense LLCs (currently just for Pythia410m)
+        with open(f'{data_path}/pythia-410m-dense-llc.pkl', 'rb') as file:
+            df_llc_dense = pickle.load(file)
+            df_llc_dense.rename(columns={"_step": "Step"}, inplace=True)
+            df_llc_dense.set_index('Step', inplace=True)
 
 
-        # LLC on full pile came as a "patch"
-        with open(f'data/pythia-full-llc.pkl', 'rb') as file:
-            df_full_llc = pickle.load(file)
+    # Extract sub-dataframes specifically for each model
+    # So we need to know where to look to find each of these
 
-        df_llc.set_index('Step', inplace=True)
-        df_loss.set_index('Step', inplace=True)
-        df_full_llc.set_index('Step', inplace=True)
+    msizes = {
+        '14m': (df_loss_dense, df_llc_sparse),
+        '31m': (df_loss_dense, df_llc_sparse),
+        '70m': (df_loss_dense, df_llc_sparse),
+        '160m': (df_loss_dense, df_llc_sparse),
+        '410m-dense': (df_loss_dense, df_llc_dense),
+        '410m': (df_loss_sparse, df_llc_sparse),
+        '1b': (df_loss_sparse, df_llc_sparse),
+    }
 
-        # Patch "full llc" into the results:
-        renames = {c:c+"-full" for c in df_full_llc.columns}
-        df_full_llc.rename(columns=renames, inplace=True)
-        df_llc = df_llc.join(df_full_llc)
-        load_dfs.df_loss = df_loss
-        load_dfs.df_llc = df_llc
+    assert code in msizes
+    msize = code.split("-")[0]  # get the size component if any tags
+
+    df_loss, df_llc = msizes[code]
+
+    # For now, we are not using the std
+    columns = [c for c in df_llc.columns if msize in c]
+
+    rename_llc = {c: c.split(msize+"-")[-1] for c in columns}
+    task_llc = df_llc[columns].rename(columns=rename_llc)
+
+    if df_loss is df_loss_dense:
+        loss_columns = [c + "-loss" for c in columns]
+        rename_loss = {c + "-loss": c.split(msize+"-")[-1] for c in columns}
     else:
-        df_loss = load_dfs.df_loss
-        df_llc = load_dfs.df_llc
+        loss_columns = columns
+        rename_loss = rename_llc
+    task_loss = df_loss[loss_columns].rename(columns=rename_loss)
 
-    sizes = set(c.split("-")[1] for c in df_loss.columns if "-" in c)
-    assert msize in sizes, sizes
+    # Now (often) we have way more steps in loss than in llc
+    if len(task_loss) > len(task_llc):
+        task_loss = task_loss.loc[task_llc.index]
 
-    # Extract this size:
-    columns = [c for c in df_loss.columns if msize in c]
-    rename = {c: c.split(msize+"-")[-1] for c in columns}
-    task_loss = df_loss[columns].rename(columns=rename)
-    task_llc = df_llc[columns].rename(columns=rename)
+    if code == "410m-dense":
+        drop = ['wikipedia_en']
+        print("Warning: dropping incomplete wikipedia task")
+        task_llc.drop(columns=drop, inplace=True)
+        task_loss.drop(columns=drop, inplace=True)
+
 
     # Note these may have NANs now...
     return task_llc / 100., task_loss
-# Cache across calls
-load_dfs.df_loss = None
-load_dfs.df_llc = None
 
 
-
+# TODO: change to llc, loss, step to avoid ambiguity...
 Trace = namedtuple('Trace', ['x','y','s'])
 
 

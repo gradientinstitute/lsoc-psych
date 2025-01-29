@@ -8,13 +8,14 @@ def dict2txt(params_dict, on="<br>"):
     return on.join(f"{k}: {v:.2f}" for k, v in params_dict.items())
 
 
-def assign_cols(names, cmap="turbo", seed=42):
+def assign_cols(names, cmap="turbo", seed=42, shuffle=False):
     """Annotate a set of names with a set of colours."""
     import plotly.express as px
     from random import Random
     cols = px.colors.sample_colorscale(cmap, len(names)+1)
-    local_rng = Random(seed)
-    local_rng.shuffle(cols)
+    if shuffle:
+        local_rng = Random(seed)
+        local_rng.shuffle(cols)
     return dict(zip(names, cols))
 
 
@@ -81,27 +82,51 @@ def fill_between(fig, x, y1, y2, color='blue', alpha=0.2, name=None, showlegend=
     ))
 
 
-def plot_split(fig, train, test, shift=None):
+def plot_data(fig, xs, ys, ss=None, shift=None,
+              color="black", name="Training Data",
+              subplot={}, showlegend=True, size=8, xscale=1.):
     """Plot the train / test datapoints."""
-    for fold, col, xs, ys, ss in (
-            ("Training Data", "gray", *train),
-            ("Test Data", "black", *test)):
 
-        if shift and "x*" in shift:
+    if shift:
+        fig.update_xaxes(type="log", **subplot)  # Set x-axis to log scale for first subplot
+        fig.update_yaxes(type="log", **subplot)  # Set y-axis to log scale for first subplot
+
+        if "x*" in shift:
             xs = xs - shift["x*"]
-        if shift and "y*" in shift:
+        if "y*" in shift:
             ys = ys - shift["y*"]
 
-
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, customdata=ss,
-            mode='markers',
-            showlegend=True,
-            name=fold,
-            marker=dict(color=col, size=8),
-            hovertemplate="Step: %{customdata:.0f}<br><extra></extra>",
-        ))
+    fig.add_trace(go.Scatter(
+        x=xs * xscale, y=ys, customdata=ss,
+        mode='markers',
+        showlegend=showlegend,
+        name=name,
+        marker=dict(
+            color=color,
+            size=size,
+            line=dict(                   # This creates and styles the marker outline
+                color='rgba(255,255,255,.5)',  #'white',        # Outline color
+                width=.25                  # Outline width
+            ),
+        ),
+        hovertemplate="Step: %{customdata:.0f}<br><extra></extra>",),
+        **subplot,
+    )
     return fig
+
+
+def add_color(rgb_str, alpha=.6):
+    """
+    Takes a color string of form 'rgb(48, 18, 59)' and returns a lighter version
+    amount: how much to lighten (0-255)
+    """
+    # Extract the numbers using string operations
+    nums = rgb_str.strip('rgb()').split(',')
+    rgb = np.array(nums).astype(float)
+    rgb = rgb*(1. - alpha) + 255. * alpha
+    rgb = np.maximum(0, np.minimum(255, rgb)).astype(np.uint8)
+
+    return 'rgb({}, {}, {})'.format(*rgb)
 
 
 def x_plot(x, res=100):
@@ -114,8 +139,9 @@ def x_plot(x, res=100):
     return x_pred
 
 
-def plot_result(fig, x, result, name="Model fit", res=100, showlegend=True,
-                shift=None):
+def plot_result(fig, x, result, res=100, shift=None, color=None, subplot=None,
+                xscale=1., outline="white", **kwargs):
+
     x_pred = x_plot(x, res=res)
     y_pred = result.f(x_pred)
 
@@ -124,15 +150,26 @@ def plot_result(fig, x, result, name="Model fit", res=100, showlegend=True,
     if shift and "y*" in shift:
         y_pred = y_pred - shift["y*"]
 
-    fig.add_trace(go.Scatter(
-        x=x_pred, y=y_pred,
-        mode='lines',
-        name=name,
-        showlegend=showlegend,
-        hovertemplate=(
-            dict2txt(result.params_dict)
-        )
-    ))
+    lineval = dict(width=1.5)
+
+    if color is not None:
+        lineval["color"] = color
+
+    if subplot is None:
+        subplot = {}
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_pred * xscale, y=y_pred,
+            mode='lines',
+            line=lineval,
+            hovertemplate=(
+                dict2txt(result.params_dict)
+            ),
+            **kwargs,
+        ),
+        **subplot
+    )
     return fig
 
 
@@ -156,4 +193,3 @@ def sample_result(fig, x, result, col, name="Model fit", res=100, sigma=2.,
         )
     ))
     return fig
-

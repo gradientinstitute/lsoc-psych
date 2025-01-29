@@ -26,7 +26,7 @@ class ModelSpec(ABC):
         return [(None, None)] * len(cls.par0)
 
 
-class ShiftedPowerLaw(ModelSpec):
+class OffsetPowerLaw(ModelSpec):
     """
     Single Offset Power Law model.
     y = L0 + c x^r
@@ -39,10 +39,10 @@ class ShiftedPowerLaw(ModelSpec):
 
     par0 = [0., 1., 1.]
     par_names = ["y*", "c", "r"]
-    name = "Y-Shifted Power Law"
+    name = "Offset Power Law (3 param)"
 
 
-class ShiftedPowerLaw2(ModelSpec):
+class OffsetPowerLaw2(ModelSpec):
     """
     Single Offset Power Law model.
     y = L0 + c x^r
@@ -55,10 +55,10 @@ class ShiftedPowerLaw2(ModelSpec):
 
     par0 = [0., 1., 1.]
     par_names = ["y*", "logc", "r"]
-    name = "Y-Shifted Power Law"
+    name = "Offset Power Law (3 param)"
 
 
-class XShiftedPowerLaw(ModelSpec):
+class XOffsetPowerLaw(ModelSpec):
 
     @staticmethod
     def function(x, params):
@@ -67,7 +67,7 @@ class XShiftedPowerLaw(ModelSpec):
 
     par0 = [0., 1., .25]
     par_names = ["x*", "c", "r"]
-    name = "X-Shifted Power Law"
+    name = "X-Offset Power Law"
 
     @staticmethod
     def bounds(x, y):
@@ -80,7 +80,7 @@ class XShiftedPowerLaw(ModelSpec):
         ]
 
 
-class XShiftedPowerLaw2(ModelSpec):
+class XOffsetPowerLaw2(ModelSpec):
 
     @staticmethod
     def function(x, params):
@@ -89,7 +89,7 @@ class XShiftedPowerLaw2(ModelSpec):
 
     par0 = [0., 1., .25]
     par_names = ["x*", "logc", "r"]
-    name = "X-Shifted Power Law"
+    name = "X-Offset Power Law"
 
     @staticmethod
     def bounds(x, y):
@@ -102,7 +102,7 @@ class XShiftedPowerLaw2(ModelSpec):
         ]
 
 
-class ShiftedLogarithm(ModelSpec):
+class OffsetLogarithm(ModelSpec):
 
     @staticmethod
     def function(x, params):
@@ -111,7 +111,7 @@ class ShiftedLogarithm(ModelSpec):
 
     par_names = ["y*", "a"]
     par0 = [0., 1.]
-    name = "Y-Shifted Logarithm"
+    name = "Offset Logarithm"
 
 
 class Cubic(ModelSpec):
@@ -124,10 +124,10 @@ class Cubic(ModelSpec):
     # Inherited bounds (unbounded)
     par0 = [0.1, 0.1, 0.1, 0.1]
     par_names = ["a0", "a1", "a2", "a3"]
-    name = "Cubic Polynomial"
+    name = "Polynomial (4 param)"
 
 
-class ShiftedExponential(ModelSpec):
+class OffsetExponential(ModelSpec):
 
     @staticmethod
     def function(x, params):
@@ -136,7 +136,7 @@ class ShiftedExponential(ModelSpec):
 
     par0 = [1., 1., 1.]
     par_names = "y*", "a", "r"
-    name = "Y-Shifted Exponential"
+    name = "Offset Exponential (3 param)"
 
 
 class DoubleExponential(ModelSpec):
@@ -152,10 +152,10 @@ class DoubleExponential(ModelSpec):
 
     par0 = [1., 1., 4., 4.]
     par_names = ["y*", "loga", "r", "b"]
-    name = "Y-Shifted Double Exponential"
+    name = "Offset Double Exponential"
 
 
-class DoubleShiftedPowerLaw(ModelSpec):
+class DoubleOffsetPowerLaw(ModelSpec):
     """
     Double offset power law model.
     y = y0 + c (x - x0)^r
@@ -164,12 +164,14 @@ class DoubleShiftedPowerLaw(ModelSpec):
     @staticmethod
     def function(x, params):
         x0, y0, logc, r = params
+        # TODO: what if noise means x0 < x
         return y0 + np.exp(logc - r * np.log(x - x0))
 
     par0 = [0.1, .1, 0.1, 1.]
     par_names = ["x*", "y*", "logc", "r"]
-    name = "XY-Shifted Power Law"
+    name = "Offset Power Law (4 param)"
 
+    # Avoids invalid value in log
     @staticmethod
     def bounds(x, y):
         eps = 1e-8
@@ -239,18 +241,26 @@ class FitResult:
         return draws, y_mu, y_std
 
 
-def curve_fit(x, y, model, rel_noise=None, par0=None):
+def convert_bounds(bounds, big_number=1e8):
+    lower = [-big_number if x is None else x for x in bounds[0]]
+    upper = [big_number if x is None else x for x in bounds[1]]
+    return (lower, upper)
 
+
+def curve_fit(x, y, model, rel_noise=False, par0=None):
+    assert not rel_noise, "Heteroskedastic noise not implemented for curvefit"
+    ## Unused
     if par0 is None:
         par0 = model.par0
 
-    bounds = np.array(list(zip(*model.bounds(x, y))))
+    bounds = list(zip(*model.bounds(x, y)))
+    bounds = convert_bounds(bounds) 
+
     def _model(x, *args):
         return model.function(x, args)
 
-    eps = 1e-12
-    par0 = np.minimum(np.maximum(par0, bounds[0]+eps), bounds[1]-eps)
-    popt, pcov = optimize.curve_fit(_model, x, y, p0=par0, bounds=bounds)
+    popt, pcov = optimize.curve_fit(_model, x, y, p0=par0, bounds=bounds,
+                                    maxfev=5000)
 
     def f(x):
         return model.function(x, popt)
@@ -280,14 +290,18 @@ def min_fit(x, y, model, method="L-BFGS-B", rel_noise=False, par0=None):
         opt_loss, par0, method=method,
         jac=autograd.grad(opt_loss), bounds=bounds)
     popt = res.x
-
-    # estimate pcov (trying to replicate curve_fit)
-    # We can use analytic hessian rather than the optimiser
-    hess = autograd.hessian(opt_loss)(popt)
-    inv_hess = np.linalg.inv(hess)
-    # inv_hess = np.asarray(res.hess_inv.todense())
+    pcov = None
     s2 = res.fun / (len(x) - len(model.par0))
-    pcov = s2 * inv_hess
+    try:
+        # estimate pcov (trying to replicate curve_fit)
+        # We can use analytic hessian rather than the optimiser
+        hess = autograd.hessian(opt_loss)(popt)
+        inv_hess = np.linalg.inv(hess)
+        # inv_hess = np.asarray(res.hess_inv.todense())
+        pcov = s2 * inv_hess
+    except:
+        # diagnostics are not critical 
+        pass
 
     def f(x):
         return model.function(x, popt)
