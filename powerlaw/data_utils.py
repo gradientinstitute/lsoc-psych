@@ -72,7 +72,6 @@ def load_dfs(code, data_path):
         '410m': (df_loss_sparse, df_llc_sparse),
         '1b': (df_loss_sparse, df_llc_sparse),
     }
-
     assert code in msizes
     msize = code.split("-")[0]  # get the size component if any tags
 
@@ -115,6 +114,7 @@ def trim_trace(df_llc, df_loss, task, start, finish):
     """
     Extract and trim (by step) a task from the data.
     Returns 1D arrays for LLC, Loss and Step.
+    Inclusive of start and finish step.
     """
     s = df_llc[task].index.values
     x = df_llc[task].values

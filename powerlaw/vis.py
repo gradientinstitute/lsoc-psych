@@ -83,8 +83,9 @@ def fill_between(fig, x, y1, y2, color='blue', alpha=0.2, name=None, showlegend=
 
 
 def plot_data(fig, xs, ys, ss=None, shift=None,
-              color="black", name="Training Data",
-              subplot={}, showlegend=True, size=8, xscale=1.):
+              color="black", name="",
+              subplot={}, showlegend=False, size=5, xscale=1.,
+              mode='markers'):
     """Plot the train / test datapoints."""
 
     if shift:
@@ -98,7 +99,7 @@ def plot_data(fig, xs, ys, ss=None, shift=None,
 
     fig.add_trace(go.Scatter(
         x=xs * xscale, y=ys, customdata=ss,
-        mode='markers',
+        mode=mode,
         showlegend=showlegend,
         name=name,
         marker=dict(
@@ -115,7 +116,7 @@ def plot_data(fig, xs, ys, ss=None, shift=None,
     return fig
 
 
-def add_color(rgb_str, alpha=.6):
+def add_color(rgb_str, alpha=.6, target=255):
     """
     Takes a color string of form 'rgb(48, 18, 59)' and returns a lighter version
     amount: how much to lighten (0-255)
@@ -123,7 +124,7 @@ def add_color(rgb_str, alpha=.6):
     # Extract the numbers using string operations
     nums = rgb_str.strip('rgb()').split(',')
     rgb = np.array(nums).astype(float)
-    rgb = rgb*(1. - alpha) + 255. * alpha
+    rgb = rgb*(1. - alpha) + target * alpha
     rgb = np.maximum(0, np.minimum(255, rgb)).astype(np.uint8)
 
     return 'rgb({}, {}, {})'.format(*rgb)
