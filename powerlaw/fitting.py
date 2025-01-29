@@ -41,6 +41,12 @@ class OffsetPowerLaw(ModelSpec):
     par_names = ["y*", "c", "r"]
     name = "Offset Power Law (3 param)"
 
+    # bonus for figure 4
+    @staticmethod
+    def inverse(y, params):
+        y0, c, r = params
+        return ((y - y0)/c)**(-1./r)
+
 
 class OffsetPowerLaw2(ModelSpec):
     """
@@ -56,6 +62,13 @@ class OffsetPowerLaw2(ModelSpec):
     par0 = [0., 1., 1.]
     par_names = ["y*", "logc", "r"]
     name = "Offset Power Law (3 param)"
+
+    # bonus for figure 4
+    @staticmethod
+    def inverse(y, params):
+        y0, logc, r = params
+        c = np.exp(logc)
+        return ((y - y0)/c)**(-1./r)
 
 
 class XOffsetPowerLaw(ModelSpec):
@@ -112,6 +125,11 @@ class OffsetLogarithm(ModelSpec):
     par_names = ["y*", "a"]
     par0 = [0., 1.]
     name = "Offset Logarithm"
+
+    @staticmethod
+    def inverse(y, params):
+        y0, a = params
+        return np.exp((y - y0)/a)
 
 
 class Cubic(ModelSpec):
@@ -196,6 +214,8 @@ class FitResult:
 
     @property
     def params_dict(self):
+        if self.model is None:
+            return {}
         return dict(zip(self.model.par_names, self.params))
 
     def pcov_diagnostics(self):
