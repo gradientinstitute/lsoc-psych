@@ -97,10 +97,16 @@ def load_dfs(code, data_path):
 
     if code == "410m-dense":
         drop = ['wikipedia_en']
-        print("Warning: dropping incomplete wikipedia task")
+        print("Warning: dropping incomplete wikipedia task from 410m-dense")
         task_llc.drop(columns=drop, inplace=True)
         task_loss.drop(columns=drop, inplace=True)
 
+    if code == "1b":
+        # we have observed dm_mathematics completely broken on this
+        drop = ['dm_mathematics']
+        print("Warning: dropping broken dm_mathematics from 1b")
+        task_llc.drop(columns=drop, inplace=True)
+        task_loss.drop(columns=drop, inplace=True)
 
     # Note these may have NANs now...
     return task_llc / 100., task_loss
@@ -138,7 +144,10 @@ def trim_trace(df_llc, df_loss, task, start, finish):
 
 
 def split(trace, cutoff_step):
-    """Used for a simple train/test split."""
+    """
+    Simple train/test split.
+    The cutoff step is part of the training split....
+    """
     x, y, s = trace
     cut = np.argmax(s > cutoff_step)
     x_train, y_train, s_train = x[:cut], y[:cut], s[:cut]
