@@ -172,3 +172,6 @@ cython_debug/
 
 powerlaw/plots/
 powerlaw/dregs.py
+
+google_colab.py
+samples
