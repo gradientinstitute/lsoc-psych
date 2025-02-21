@@ -4,7 +4,7 @@ import numpy as np
 from datasets import load_dataset
 # from tqdm.notebook import tqdm
 from tqdm import tqdm
-from google_colab import userdata  # note using my local mockup
+from google.colab import userdata  # or ask Al for local mockup
 
 
 def extract_task(task):
