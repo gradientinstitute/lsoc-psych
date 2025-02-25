@@ -198,3 +198,9 @@ def crossval(heldout_err, heldout_std, fit_err, method_name):
         height=600,
     )
     return fig
+
+
+# Plotly has this bug where the first figure doesn't show --> prime the system
+fig = go.Figure()
+fig.update_layout(width=10, height=10)  # non-display size
+fig.show()

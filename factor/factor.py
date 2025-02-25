@@ -56,11 +56,13 @@ class PCA:
 
 class NMF:
 
-    def __init__(self, L2=1e-4, method="opt", max_iters=20):
+    def __init__(self, L2=1e-4, method="opt", max_iters=500):
         self.name = "NMF"
-        self.L2 = L2  # regulariser (optional)
+        self.L2 = L2
+        # regulariser (optional) but a *tiny* amount helps with stability
         self.method = method
         self.max_iters = max_iters
+
 
     def heuristic(self, X, dims, mask=None):
         """Initialisation heuristic for NMF."""
@@ -168,23 +170,27 @@ class NMF:
         # This is an update derived from the gradient of the opt_fit
         # But with per-parameter updates that ensure positivity and 
         # fast convergence (from the literature)
+        eps = 1e-5  # avoid HUGE updates
 
-        for i in range(self.max_iters):
+
+        for alpha in np.linspace(1., 0., self.max_iters):
             if mask is not None:
                 # Ensure masked do not contribute
                 R = U @ V
                 Z[mask] = R[mask]
 
+            # learning rate schedule
+            beta = 1. - alpha
+
             # Update U
-            eps = 1e-10
             numerator = Z @ V.T
             denominator = U @ (V @ V.T)
-            U *= numerator / (denominator + eps)
+            U *= beta + alpha * numerator / (denominator + eps)
 
             # Update W
             numerator = U.T @ Z
             denominator = (U.T @ U) @ V
-            V *= numerator / (denominator + eps)
+            V *= beta + alpha * numerator / (denominator + eps)
 
             # U *= (Z @ V.T) / (U @ (V @ V.T))
             # V *= (U.T @ Z) / ((U.T @ U)@V)
