@@ -6,7 +6,7 @@ from scipy.cluster import hierarchy
 
 def load(name):
     if name == "p70m":
-        return load_pythia_tensor()[0]
+        return load_pythia_tensor("70m")[0]
     elif name == "helm":
         return load_helm()
     elif name == "synthetic":
