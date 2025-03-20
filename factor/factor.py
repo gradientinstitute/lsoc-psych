@@ -9,9 +9,50 @@ from scipy.optimize import minimize
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.decomposition import TruncatedSVD
+from sklearn.decomposition import TruncatedSVD, FactorAnalysis
 # import autograd.numpy as np
 # from autograd import grad
+
+
+class FA:
+    """Implement PCA for missing-at-random data."""
+
+    def __init__(self, iters=20, **kwargs):
+        self.name = "FA"  # Used for plotting etc.
+        self.iters = iters
+        # Lazily pass on all arguments
+        self.model = FactorAnalysis(kwargs)
+
+    def fit(self, X, dims, mask=None):
+
+        assert mask is None or mask.dtype == bool
+
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+
+        if mask is None:
+            # Dense PCA
+            self._fit(X, dims)
+            return self.R
+
+        # EM Approach
+        Xd = fill_column_mean(X, mask)
+
+        for iteration in range(self.iters):
+            self._fit(Xd, dims)
+            Xd[mask] = self.R[mask]
+
+        return self.R
+
+
+    def _fit(self, X, dims):
+        """Dense factorisation."""
+        FA = self.model
+        FA.n_components = dims
+        self.U = FA.fit_transform(X)
+        self.V = FA.components_
+        self.mu = FA.mean_
+        self.R = self.U @ self.V + self.mu
 
 
 class PCA:

@@ -6,7 +6,7 @@ from scipy.cluster import hierarchy
 
 def load(name):
     if name == "p70m":
-        return load_pythia_tensor("70m")[0]
+        return load_pythia_table("70m")[0]
     elif name == "helm":
         return load_helm()
     elif name == "synthetic":
@@ -15,7 +15,7 @@ def load(name):
         raise NotImplementedError()
 
 
-def load_pythia_tensor(model_size):
+def load_pythia_table(model_size):
     assert model_size == "70m"
 
     df = pd.read_csv(f'data/p{model_size}.csv')
@@ -77,3 +77,73 @@ def preorder(X):
         raise NotImplementedError("Unsupported format.")
 
     return ordered
+
+
+def scale(X, method="standard"):
+    if method == "none":
+        return X.copy()
+    elif method == "modality":
+        T, indices = df_to_tensor(X)
+        for i in range(T.shape[-1]):
+            T[:, :, i] /= np.std(T[:, :, i].ravel())
+        return tensor_to_df(T, indices)
+
+    if isinstance(X, pd.DataFrame):
+        values = X.values
+    else:
+        values = X
+
+    scaled = values.copy()  # We're about to modify them inplace
+
+    if method == "positive":
+        scaled -= scaled.min(axis=0)
+        scaled /= scaled.max(axis=0)
+    elif method == "standard":
+        scaled -= scaled.mean(axis=0)
+        scaled /= scaled.std(axis=0)
+
+    else:
+        raise NotImplementedError()
+
+    if isinstance(X, pd.DataFrame):
+        scaled = pd.DataFrame(
+            scaled,
+            columns=X.columns,
+            index=X.index,
+        )
+
+    return scaled
+
+
+def df_to_tensor(X):
+    """Convert a dataframe into a tensor."""
+    # Step 1: Split the column names into measure and task
+    tasks = list(X.columns.str.split('/').str[1].unique())
+    measures = list(X.columns.str.split('/').str[0].unique())
+
+    # Step 2: Reshape into 3D array
+    steps = X.index.values
+    T = np.zeros((len(steps), len(tasks), len(measures)))
+
+    #T *= np.array([1, 1, .25])[None, None, :]
+
+    # Fill the array (or could cast as a pd.MultiIndex)
+    for i, task in enumerate(tasks):
+        for j, measure in enumerate(measures):
+            T[:, i, j] = X[f'{measure}/{task}'].values
+
+    return T, (steps, tasks, measures)
+
+
+def tensor_to_df(T, indices):
+    index, tasks, measures = indices
+    shape = tuple(len(v) for v in indices)
+    assert shape==T.shape, "Indices don't match"
+    columns = {}
+    ix = 0
+    for j, measure in enumerate(measures):
+        for i, task in enumerate(tasks):
+            columns[f'{measure}/{task}'] = T[:, i, j]
+            ix += 1
+
+    return pd.DataFrame(columns, index=index)

@@ -46,10 +46,11 @@ def heatmap(table, width, height, upper=False, title="", decimals=2, **kwargs):
     return fig
 
 
-def traces(X, categories, stds={}, cmap="turbo", col=1, cols=1, fig=None):
+def traces(X, stds={}, cmap="turbo", col=1, cols=1, fig=None):
     """Plot traces from a 2d matrix, splitting on / in column names."""
     steps = X.index.values
     task_names = sorted(list(set(v.split("/")[1] for v in X.columns)))
+    categories = sorted(list(set(v.split("/")[0] for v in X.columns)))
     colours = px.colors.sample_colorscale(cmap, len(task_names))
     task_colors = dict(zip(task_names, colours))
 
