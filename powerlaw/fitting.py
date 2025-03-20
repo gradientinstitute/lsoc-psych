@@ -26,6 +26,22 @@ class ModelSpec(ABC):
         return [(None, None)] * len(cls.par0)
 
 
+class PowerLaw(ModelSpec):
+    """
+    Non-Offset Power Law model.
+    y = L0 + c x^r
+    """
+
+    @staticmethod
+    def function(x, params):
+        logc, r = params
+        return np.exp(logc) * (x**(-r))
+
+    par0 = [1., 1.]  # initial guess
+    par_names = ["logc", "r"]
+    name = "Power Law (2 param)"
+
+
 class OffsetPowerLaw(ModelSpec):
     """
     Single Offset Power Law model.
@@ -46,6 +62,19 @@ class OffsetPowerLaw(ModelSpec):
     def inverse(y, params):
         y0, c, r = params
         return ((y - y0)/c)**(-1./r)
+
+
+class Modron(ModelSpec):
+
+    @staticmethod
+    def function(x, params):
+        b, a, y0, c, r = params
+        v = a * np.log(x) + b
+        return y0 + c * (v**(-r))
+
+    par_names = ["y*", "a", "y*", "c", "r"]
+    par0 = [0., 1., 0., 1., 1.]
+    name = "Offset Power Logarithm"
 
 
 class OffsetPowerLaw2(ModelSpec):
@@ -216,7 +245,7 @@ class FitResult:
     def params_dict(self):
         if self.model is None:
             return {}
-        return dict(zip(self.model.par_names, self.params))
+        return {k: float(v) for k, v in zip(self.model.par_names, self.params)}
 
     def pcov_diagnostics(self):
         """Compute fit diagnostics for sum-of-squared-error objectives."""

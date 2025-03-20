@@ -1,6 +1,8 @@
-import plotly.graph_objects as go
+import plotly.graph_objects as go  # temporarily don't drop
 import plotly.express as px
 import numpy as np
+from data_utils import Trace
+from fitting import FitResult
 
 
 def dict2txt(params_dict, on="<br>"):
@@ -12,11 +14,16 @@ def assign_cols(names, cmap="turbo", seed=42, shuffle=False):
     """Annotate a set of names with a set of colours."""
     import plotly.express as px
     from random import Random
-    cols = px.colors.sample_colorscale(cmap, len(names)+1)
+    cols = px.colors.sample_colorscale(cmap, len(names))
     if shuffle:
         local_rng = Random(seed)
         local_rng.shuffle(cols)
     return dict(zip(names, cols))
+
+
+def fade(color):
+    # pull towards gray
+    return add_color(color, 0.85, 211)
 
 
 def fill_between(fig, x, y1, y2, color='blue', alpha=0.2, name=None, showlegend=False):
@@ -82,11 +89,17 @@ def fill_between(fig, x, y1, y2, color='blue', alpha=0.2, name=None, showlegend=
     ))
 
 
-def plot_data(fig, xs, ys, ss=None, shift=None,
+def plot_data(fig, xs, ys=None, ss=None, shift=None,
               color="black", name="",
-              subplot={}, showlegend=False, size=5, xscale=1.,
-              mode='markers'):
+              subplot={}, showlegend=None, size=5, xscale=1.,
+              mode='markers', **kwargs):
     """Plot the train / test datapoints."""
+
+    if showlegend is None:
+        showlegend = name!=""
+
+    if isinstance(xs, Trace):
+        xs, ys, ss = xs  # unpack
 
     if shift:
         fig.update_xaxes(type="log", **subplot)  # Set x-axis to log scale for first subplot
@@ -97,20 +110,23 @@ def plot_data(fig, xs, ys, ss=None, shift=None,
         if "y*" in shift:
             ys = ys - shift["y*"]
 
-    fig.add_trace(go.Scatter(
-        x=xs * xscale, y=ys, customdata=ss,
-        mode=mode,
-        showlegend=showlegend,
-        name=name,
-        marker=dict(
-            color=color,
-            size=size,
-            line=dict(                   # This creates and styles the marker outline
-                color='rgba(255,255,255,.5)',  #'white',        # Outline color
-                width=.25                  # Outline width
+    fig.add_trace(
+        go.Scatter(
+            x=xs * xscale, y=ys, customdata=ss,
+            mode=mode,
+            showlegend=showlegend,
+            name=name,
+            marker=dict(
+                color=color,
+                size=size,
+                line=dict(                   # This creates and styles the marker outline
+                    color='rgba(255,255,255,.5)',  #'white',        # Outline color
+                    width=.25                  # Outline width
+                ),
             ),
+            hovertemplate=f"Name:{name}<br>" + "Step: %{customdata}<br><extra></extra>",
+            **kwargs,
         ),
-        hovertemplate="Step: %{customdata:.0f}<br><extra></extra>",),
         **subplot,
     )
     return fig
@@ -144,7 +160,14 @@ def plot_result(fig, x, result, res=100, shift=None, color=None, subplot=None,
                 xscale=1., outline="white", **kwargs):
 
     x_pred = x_plot(x, res=res)
-    y_pred = result.f(x_pred)
+
+    if isinstance(result, FitResult):
+        y_pred = result.f(x_pred)
+        params_dict = result.params_dict
+    else:
+        # assume function
+        y_pred = result(x_pred)
+        params_dict = {}
 
     if shift and "x*" in shift:
         x_pred = x_pred - shift["x*"]
@@ -165,7 +188,7 @@ def plot_result(fig, x, result, res=100, shift=None, color=None, subplot=None,
             mode='lines',
             line=lineval,
             hovertemplate=(
-                dict2txt(result.params_dict)
+                dict2txt(params_dict)
             ),
             **kwargs,
         ),
@@ -194,3 +217,9 @@ def sample_result(fig, x, result, col, name="Model fit", res=100, sigma=2.,
         )
     ))
     return fig
+
+
+# Plotly has this bug where the first figure doesn't show --> prime the system
+fig = go.Figure()
+fig.update_layout(width=10, height=10)  # non-display size
+fig.show()
