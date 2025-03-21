@@ -9,14 +9,24 @@ import fire  # need to install
 import os
 import shutil
 from tqdm import tqdm
+import time
 
 
-def setup_model(model_name, revision):
+def setup_model(model_name, revision, max_retries=100, rest=10):
     """Load model and tokenizer with specified revision."""
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, revision=revision, torch_dtype=torch.float16,
-        device_map="auto"  # contradicts manual device handling below
-    )
+
+    for _ in range(max_retries):
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, revision=revision, torch_dtype=torch.float16,
+                device_map="auto"  # contradicts manual device handling below
+            )
+            break  # I guess it worked
+        except:
+            time.sleep(rest)
+    else:
+        assert False, "Couldnt load model!"
+
     model.eval()  # switch to evaluation mode
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = next(iter(model.hf_device_map.values()))
@@ -311,10 +321,10 @@ SPARSE_CHK = [
 ]
 
 
-def main(worker_id=-1, batch_size=64):
+def main(worker_id=0, batch_size=64, debug=0):
 
     ## CONFIGURE
-    DEBUG = False  # Set for a minimal test configuration
+    DEBUG = (debug > 0)  # Set for a minimal test configuration
 
     work_split = [
         ["14m", "30m", "70m", "160m", "410m"],  # 512
@@ -342,7 +352,6 @@ def main(worker_id=-1, batch_size=64):
 
     print(f"I am worker {worker_id} and will do tasks {str(MODEL_SIZES)}")
 
-
     MODEL_SIZES.reverse()  # Process largest to smallest
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
@@ -353,6 +362,7 @@ def main(worker_id=-1, batch_size=64):
     EXPERIMENT_NAME = "EXP000"
 
     if DEBUG:
+        print("I am in DEBUG MODE and will do a demonstration")
         MODEL_CHECKPOINTS = [10000, 143000]
         MODEL_SIZES = ["14m", "160m"]  # overwritten, not checked
         CLEAR_DISK = True  # False
@@ -410,6 +420,11 @@ def main(worker_id=-1, batch_size=64):
             step = int(revision.split("step")[-1])
             # format filename to be of form 000300, 010000, etc.
             filename = os.path.join(model_folder, f"step{step:06d}.pkl")
+
+            if os.path.exists(filename):
+                print(f"Pythia-{model_size}-{revision}")
+                print("How convenient, its already here! Skipping")
+                continue
 
             # Set up model (so it can be used by both process functions)
             model, device = setup_model(model_name, revision)
