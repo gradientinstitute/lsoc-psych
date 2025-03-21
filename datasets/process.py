@@ -252,18 +252,25 @@ def make_token_mapper(tokenizer, field="text", **kwargs):
         input_ids = tokenizer.encode(
             example[field],
         )
+
+        # The sampled size is either 512 or 100
+        clip = 512 if len(input) > 250 else 100
+
         if input_ids[-1] == 535:
             # Handle the non-invertible \n\n coding
             input_ids[-1] = 187
             input_ids.append(187)
 
-        if len(input_ids) % 2:
+        while len(input_ids) < clip:
             input_ids.append(187)
+
+        input_ids = input_ids[:clip]
 
         return {
             "input_ids": input_ids,
             "tokens": tokenizer.batch_decode(input_ids),
         }
+
     return fn_tokenize
 
 
@@ -325,7 +332,7 @@ def main(worker_id=-1):
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
     DATASETS = None  # All
-    BATCH_SIZE = 32  # this is distinct from subset size - tune to fit in memory
+    BATCH_SIZE = 256  # this is distinct from subset size - tune to fit in memory
     # TODO: optimal batch size is a function of model size?
     MAX_CONTEXT_LENGTH = 512  # Maximum context length for tokenization
     EXPERIMENT_NAME = "EXP000"
@@ -365,7 +372,9 @@ def main(worker_id=-1):
             max_length=MAX_CONTEXT_LENGTH,
     )
     dataset_pile = dataset_pile.map(fn_tokenize, batched=False)
-    dataset_dm_math = dataset_dm_math.map(fn_tokenize, batched=False)
+
+    # This one doesn't need it...
+    # dataset_dm_math = dataset_dm_math.map(fn_tokenize, batched=False)
 
     # job_num = 0
     # Loop over models
