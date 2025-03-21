@@ -301,11 +301,23 @@ SPARSE_CHK = [
 ]
 
 
-def main(worker_id=0, n_workers=1):
+def main(worker_id=-1):
 
     ## CONFIGURE
-    DEBUG = True  # Set for a minimal test configuration
-    MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
+    DEBUG = False  # Set for a minimal test configuration
+
+    work_split = [
+        ["14m", "30m", "70m", "160m", "410m"],
+        ["1b", "1.4b"],
+        ["2.8b"],
+        ["6.9b"],
+    ]
+
+    if worker_id == -1:
+        MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
+    else:
+        MODEL_SIZES = work_split[worker_id]
+
     MODEL_SIZES.reverse()  # Process largest to smallest
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
@@ -352,7 +364,7 @@ def main(worker_id=0, n_workers=1):
     dataset_pile = dataset_pile.map(fn_tokenize, batched=False)
     dataset_dm_math = dataset_dm_math.map(fn_tokenize, batched=False)
 
-    job_num = 0
+    # job_num = 0
     # Loop over models
     for model_size in MODEL_SIZES:
         model_name = f"EleutherAI/pythia-{model_size}"
@@ -363,9 +375,9 @@ def main(worker_id=0, n_workers=1):
         # Loop over model checkpoints with tqdm
         for revision in revs:
 
-            job_num += 1
-            if job_num % n_workers != worker_id:
-                continue
+            # job_num += 1
+            # if job_num % n_workers != worker_id:
+            #     continue
 
             print(f"Processing {model_size} @ {revision}")
             step = int(revision.split("step")[-1])
