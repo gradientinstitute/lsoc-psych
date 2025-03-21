@@ -254,7 +254,7 @@ def make_token_mapper(tokenizer, field="text", **kwargs):
         )
 
         # The sampled size is either 512 or 100
-        clip = 512 if len(input) > 250 else 100
+        clip = 512 if len(input_ids) > 250 else 100
 
         if input_ids[-1] == 535:
             # Handle the non-invertible \n\n coding
@@ -311,7 +311,7 @@ SPARSE_CHK = [
 ]
 
 
-def main(worker_id=-1):
+def main(worker_id=-1, batch_size=256):
 
     ## CONFIGURE
     DEBUG = False  # Set for a minimal test configuration
@@ -322,17 +322,19 @@ def main(worker_id=-1):
         ["2.8b"],
         ["6.9b"],
     ]
-
     if worker_id == -1:
         MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
     else:
         MODEL_SIZES = work_split[worker_id]
 
+    print(f"I am worker {worker_id} and will do tasks {str(MODEL_SIZES)}")
+
+
     MODEL_SIZES.reverse()  # Process largest to smallest
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
     DATASETS = None  # All
-    BATCH_SIZE = 256  # this is distinct from subset size - tune to fit in memory
+    BATCH_SIZE = batch_size  # this is distinct from subset size - tune to fit in memory
     # TODO: optimal batch size is a function of model size?
     MAX_CONTEXT_LENGTH = 512  # Maximum context length for tokenization
     EXPERIMENT_NAME = "EXP000"
