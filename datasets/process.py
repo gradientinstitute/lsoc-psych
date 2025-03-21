@@ -24,7 +24,7 @@ def setup_model(model_name, revision):
     return model, device
 
 
-def cleanup_model(model, clear_disk=False, model_name=None, revision=None):
+def cleanup_model(model, clear_disk=False, model_name=None):
     """Clean up model from memory and optionally from disk."""
     print(f"Cleaning up {model_name}")
     model = model.cpu()
@@ -311,17 +311,30 @@ SPARSE_CHK = [
 ]
 
 
-def main(worker_id=-1, batch_size=256):
+def main(worker_id=-1, batch_size=64):
 
     ## CONFIGURE
     DEBUG = False  # Set for a minimal test configuration
 
     work_split = [
-        ["14m", "30m", "70m", "160m", "410m"],
-        ["1b", "1.4b"],
-        ["2.8b"],
-        ["6.9b"],
+        ["14m", "30m", "70m", "160m", "410m"],  # 512
+        ["1b", "1.4b"],  # 512
+        ["2.8b"],  # 256
+        ["6.9b"],  # 128 max batch size..
     ]
+    default_batch = [512, 512, 256, 128, 32]  # the last one is for CPU...
+
+    # How big is big enough?
+    # trying github on 410m with batch size
+    # 8: 22 seconds
+    # 16: 17 seconds
+    # 32: 18 seconds
+    # 64: 18 seconds
+    # 256: 18 seconds
+
+    if batch_size is None:
+        batch_size = default_batch[worker_id]
+
     if worker_id == -1:
         MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
     else:
@@ -358,8 +371,8 @@ def main(worker_id=-1, batch_size=256):
         "idx", list(range(len(dataset_pile))))
     dataset_pile = filter_subsets(
         dataset_pile, include=DATASETS, exclude=["dm_mathematics"])
-    if DEBUG:
-        dataset_pile = dataset_pile.take(50) # really mini job :)
+    # if DEBUG:
+    #     dataset_pile = dataset_pile.take(50) # really mini job :)
 
     dataset_dm_math = load_dataset("timaeus/dm_mathematics_mini", split="train")
 
@@ -401,6 +414,14 @@ def main(worker_id=-1, batch_size=256):
             # Set up model (so it can be used by both process functions)
             model, device = setup_model(model_name, revision)
 
+            # Process standard dataset
+            standard_results = process_regular_dataset(
+                model,
+                device,
+                dataset_pile,
+                batch_size=BATCH_SIZE,
+            )
+
             # Process dm_mathematics dataset separately
             dm_math_results = process_dm_mathematics(
                 model,
@@ -410,16 +431,8 @@ def main(worker_id=-1, batch_size=256):
                 batch_size=BATCH_SIZE,
             )
 
-            # Process standard dataset
-            standard_results = process_regular_dataset(
-                model,
-                device,
-                dataset_pile,
-                batch_size=BATCH_SIZE,
-            )
-
             # dm_math_results = {}  # skip for now
-            cleanup_model(model, CLEAR_DISK, model_name, revision)
+            cleanup_model(model, CLEAR_DISK, model_name)
 
             # Combine results and save
             combined_results = {**standard_results, **dm_math_results}
