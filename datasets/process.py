@@ -257,6 +257,9 @@ def make_token_mapper(tokenizer, field="text", **kwargs):
             input_ids[-1] = 187
             input_ids.append(187)
 
+        if len(input_ids) % 2:
+            input_ids.append(187)
+
         return {
             "input_ids": input_ids,
             "tokens": tokenizer.batch_decode(input_ids),
