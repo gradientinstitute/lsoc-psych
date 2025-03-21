@@ -298,7 +298,7 @@ SPARSE_CHK = [
 def main():
     ## CONFIGURE
     DEBUG = True  # Set for a minimal test configuration
-    MODEL_SIZES = ["14m", "30m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
+    MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
     MODEL_SIZES.reverse()  # Process largest to smallest
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
