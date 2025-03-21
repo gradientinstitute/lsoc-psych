@@ -5,6 +5,7 @@ from datasets import load_dataset
 import numpy as np
 import pickle
 import gc
+import fire  # need to install
 import os
 import shutil
 from tqdm import tqdm
@@ -14,17 +15,18 @@ def setup_model(model_name, revision):
     """Load model and tokenizer with specified revision."""
     model = AutoModelForCausalLM.from_pretrained(
         model_name, revision=revision, torch_dtype=torch.float16,
-        # device_map="auto"  # contradicts manual device handling below
-        # Do we want to use multi-gpus? (do we have multi-gpus?)
-    )  # TODO: check with Al whether this is fine [it was in my notebook]
+        device_map="auto"  # contradicts manual device handling below
+    )
     model.eval()  # switch to evaluation mode
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = next(iter(model.hf_device_map.values()))
+    # model.to(device)
     return model, device
 
 
-def cleanup_model(model, clear_disk=False, model_name=None):
+def cleanup_model(model, clear_disk=False, model_name=None, revision=None):
     """Clean up model from memory and optionally from disk."""
+    print(f"Cleaning up {model_name}")
     model = model.cpu()
     del model
     gc.collect()
@@ -33,9 +35,13 @@ def cleanup_model(model, clear_disk=False, model_name=None):
 
     # Optionally clear from disk
     if clear_disk and model_name:
-        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
-        if os.path.exists(os.path.join(cache_dir, "models", model_name.split("/")[-1])):
-            shutil.rmtree(os.path.join(cache_dir, "models", model_name.split("/")[-1]))
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+        target = "models--" + model_name.replace("/", "--")
+        cache_path = os.path.join(cache_dir, target)
+        # WARNING - do not run multiple workers on the same machine without fixing this
+
+        if os.path.exists(cache_path):
+            shutil.rmtree(cache_path)
         else:
             print("WARNING: model cache not found.")
 
@@ -295,7 +301,8 @@ SPARSE_CHK = [
 ]
 
 
-def main():
+def main(worker_id=0, n_workers=1):
+
     ## CONFIGURE
     DEBUG = True  # Set for a minimal test configuration
     MODEL_SIZES = ["14m", "30m", "70m", "160m", "410m", "1b", "1.4b", "2.8b", "6.9b"]
@@ -303,7 +310,7 @@ def main():
     MODEL_CHECKPOINTS = None  # All
     CLEAR_DISK = True  # Avoid caching Terabytes of model checkpoints
     DATASETS = None  # All
-    BATCH_SIZE = 8  # this is distinct from subset size - tune to fit in memory
+    BATCH_SIZE = 32  # this is distinct from subset size - tune to fit in memory
     # TODO: optimal batch size is a function of model size?
     MAX_CONTEXT_LENGTH = 512  # Maximum context length for tokenization
     EXPERIMENT_NAME = "EXP000"
@@ -345,7 +352,7 @@ def main():
     dataset_pile = dataset_pile.map(fn_tokenize, batched=False)
     dataset_dm_math = dataset_dm_math.map(fn_tokenize, batched=False)
 
-
+    job_num = 0
     # Loop over models
     for model_size in MODEL_SIZES:
         model_name = f"EleutherAI/pythia-{model_size}"
@@ -355,6 +362,11 @@ def main():
 
         # Loop over model checkpoints with tqdm
         for revision in revs:
+
+            job_num += 1
+            if job_num % n_workers != worker_id:
+                continue
+
             print(f"Processing {model_size} @ {revision}")
             step = int(revision.split("step")[-1])
             # format filename to be of form 000300, 010000, etc.
@@ -381,7 +393,7 @@ def main():
             )
 
             # dm_math_results = {}  # skip for now
-            cleanup_model(model, CLEAR_DISK, model_name)
+            cleanup_model(model, CLEAR_DISK, model_name, revision)
 
             # Combine results and save
             combined_results = {**standard_results, **dm_math_results}
@@ -395,4 +407,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)
