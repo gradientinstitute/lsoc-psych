@@ -14,22 +14,20 @@ import time
 N_WORKERS = 4
 
 
-def main(machine_id=0, worker_id=0, batch_size=32, debug=0):
+def main(machine_id=0, worker_id=0, batch_size=32, debug=False):
 
     ## CONFIGURE
-    DEBUG = (debug > 0)  # Set for a minimal test configuration
 
     # Machines split on dataset
     # Workers split on checkpoints
     work_split = [
-        ["14m", "30m", "70m", "160m", "410m"],
+        ["14m", "31m", "70m", "160m", "410m"],
         ["1b", "1.4b"],
         ["2.8b"],
         ["6.9b"],
     ]
 
     MODEL_SIZES = work_split[machine_id]
-    print(f"I am worker {worker_id} for tasks {str(MODEL_SIZES)}")
 
     MODEL_SIZES.reverse()  # Process largest to smallest
     MODEL_CHECKPOINTS = None  # All
@@ -40,13 +38,15 @@ def main(machine_id=0, worker_id=0, batch_size=32, debug=0):
     MAX_CONTEXT_LENGTH = 512  # Maximum context length for tokenization
     EXPERIMENT_NAME = "EXP000"
 
-    if DEBUG:
-        print("I am in DEBUG MODE and will do a demonstration")
-        MODEL_CHECKPOINTS = [10000, 143000]
-        MODEL_SIZES = ["14m", "160m"]  # overwritten, not checked
-        CLEAR_DISK = True  # False
-        DATASETS = ["wikipedia_en", "enron_emails"]
-        EXPERIMENT_NAME = "debug"
+    if debug:
+        print("I am in debug MODE and will do a demonstration")
+        MODEL_CHECKPOINTS = [143000]
+        MODEL_SIZES = ["160m"]  # overwritten, not checked
+        CLEAR_DISK = False
+        DATASETS = ["enron_emails"]
+        EXPERIMENT_NAME = "debug1"
+
+    print(f"I am worker {worker_id} for tasks {str(MODEL_SIZES)}")
 
     # Make path for results
     os.makedirs("experiments", exist_ok=True)
@@ -60,8 +60,9 @@ def main(machine_id=0, worker_id=0, batch_size=32, debug=0):
         "idx", list(range(len(dataset_pile))))
     dataset_pile = filter_subsets(
         dataset_pile, include=DATASETS, exclude=["dm_mathematics"])
-    # if DEBUG:
-    #     dataset_pile = dataset_pile.take(50) # really mini job :)
+
+    if debug:
+        dataset_pile = dataset_pile.take(50) # really mini job :)
 
     dataset_dm_math = load_dataset("timaeus/dm_mathematics_mini", split="train")
 
@@ -101,9 +102,8 @@ def main(machine_id=0, worker_id=0, batch_size=32, debug=0):
             # format filename to be of form 000300, 010000, etc.
             filename = os.path.join(model_folder, f"step{step:06d}.pkl")
 
-            if os.path.exists(filename):
-                print(f"Pythia-{model_size}-{revision}")
-                print("How convenient, its already here! Skipping")
+            if not debug and os.path.exists(filename):
+                print(f"Skipping Pythia-{model_size}-{revision}")
                 continue
 
             # Set up model (so it can be used by both process functions)
@@ -160,7 +160,7 @@ def unlock(i):
 
 def setup_model(model_name, revision, worker_id, max_retries=100, rest=10):
     """Load model and tokenizer with specified revision."""
-    assert torch.cuda.device_count() == N_WORKERS
+    # assert torch.cuda.device_count() == N_WORKERS
 
     lock(worker_id)
     for _ in range(max_retries):
@@ -179,7 +179,11 @@ def setup_model(model_name, revision, worker_id, max_retries=100, rest=10):
     model.eval()  # switch to evaluation mode
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = next(iter(model.hf_device_map.values()))
-    device = torch.device(f"cuda:{worker_id}")
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{worker_id}")
+    else:
+        device = torch.device("cpu")
+
     model.to(device)
     return model, device
 
@@ -332,7 +336,7 @@ def process_dm_mathematics(model, device, dataset, tokenizer, batch_size=8,
         encoded = tokenizer(
             sample["text"],
             padding=False,
-            truncation=True,
+            truncation=True,  # Should fix!
             max_length=max_context_length,
             return_tensors="pt",
         )
@@ -382,7 +386,7 @@ def process_dm_mathematics(model, device, dataset, tokenizer, batch_size=8,
         encoded = tokenizer(
             concatenated_text,
             padding=False,
-            truncation=True,
+            truncation=True,  # should fix for sure!
             max_length=max_context_length,
             return_tensors="pt",
         )
