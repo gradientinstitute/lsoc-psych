@@ -193,7 +193,7 @@ def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None
     
     return results
 
-def create_pertoken_html(results, selected_steps=None, model_name="", dataset_name=""):
+def create_pertoken_html(all_models_results, selected_steps=None, model_name="", dataset_name=""):
     """
     Create HTML for per-token loss visualization with interactive controls.
     
@@ -206,6 +206,15 @@ def create_pertoken_html(results, selected_steps=None, model_name="", dataset_na
     Returns:
         HTML string for display
     """
+    # Get all available model sizes
+    model_sizes = list(all_models_results.keys())
+    if not model_sizes:
+        return "<div>Error: No model data available</div>"
+    
+    # Default to the first model size in the list
+    default_model_size = model_sizes[0]
+    results = all_models_results[default_model_size]
+
     # Get all context indices
     context_indices = sorted(list(results.keys()), key=int)
     
@@ -256,7 +265,7 @@ def create_pertoken_html(results, selected_steps=None, model_name="", dataset_na
     
     # IMPORTANT CHANGE: Pass only the available_steps (which now equals our filtered subset)
     # instead of all_steps to the controls
-    html += create_controls_html(available_steps, selected_steps, categories)
+    html += create_controls_html(available_steps, selected_steps, categories, model_sizes, default_model_size)
     
     # Create container for visualization
     html += '<div id="visualization-container">'
@@ -270,7 +279,7 @@ def create_pertoken_html(results, selected_steps=None, model_name="", dataset_na
     html += '</div>'
     
     # Add JavaScript for toggling between views and handling selections
-    html += create_toggle_script(results, context_indices, default_context)
+    html += create_toggle_script(all_models_results, context_indices, default_context, default_model_size)
     
     return html
 
@@ -553,6 +562,26 @@ def create_html_styles():
             width: 80%;
             max-width: 600px;
         }
+        .model-selector {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .model-selector-title {
+            font-weight: bold;
+            font-size: 16px;
+            color: black;
+        }
+        .model-dropdown {
+            padding: 8px 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            min-width: 300px;
+            background-color: white;
+        }
         @media (max-width: 768px) {
             .interval-selector {
                 width: 95%;
@@ -564,7 +593,7 @@ def create_html_styles():
     </style>
     """
 
-def create_controls_html(all_steps, selected_steps, categories):
+def create_controls_html(all_steps, selected_steps, categories, model_sizes, default_model_size):
     """
     Create HTML for step selection and visualization toggle controls.
     
@@ -572,18 +601,42 @@ def create_controls_html(all_steps, selected_steps, categories):
         all_steps: List of all available steps - THIS SHOULD BE LIMITED TO JUST THE SELECTED STEPS NOW
         selected_steps: List of currently selected steps
         categories: Dictionary of context categories (context_id -> label)
+        model_sizes: List of available model sizes
+        default_model_size: Default model size to show initially
         
     Returns:
         HTML string with controls
     """
+    # Start the controls container
     html = '''
     <div class="controls-container">
+    '''
+    
+    # Add model selector dropdown
+    html += '''
+        <div class="model-selector">
+            <div class="model-selector-title">Select Model Size:</div>
+            <select id="model-dropdown" class="model-dropdown" onchange="updateModelSize()">
+    '''
+
+    # Add model sizes to dropdown
+    for model_size in model_sizes:
+        selected = "selected" if model_size == default_model_size else ""
+        html += f'<option value="{model_size}" {selected}>Model Size: {model_size}</option>'
+    
+    html += '''
+            </select>
+        </div>
+    '''
+    
+    # Add step selector
+    html += '''
         <div class="step-selector">
             <div class="step-selector-title">Select Checkpoints to Display:</div>
             <div class="step-checkboxes">
     '''
 
-    # Add a checkbox for each step - now all_steps should only include the filtered subset
+    # Add a checkbox for each step
     for step in all_steps:
         checked = "checked" if step in selected_steps else ""
         html += f'''
@@ -637,14 +690,16 @@ def create_controls_html(all_steps, selected_steps, categories):
 
     return html
 
-def create_toggle_script(results, context_indices, default_context):
+def create_toggle_script(all_models_results, context_indices, 
+                         default_context, default_model_size):
     """
-    Create JavaScript for toggle functionality and context selection.
+    Create JavaScript for toggle functionality and selection.
     
     Args:
-        results: Dictionary with token loss results
+        all_models_results: Dictionary with token loss results for each model size
         context_indices: List of context indices
         default_context: Default context to show initially
+        default_model_size: Default model size to show initially
         
     Returns:
         JavaScript code as a string
@@ -652,17 +707,19 @@ def create_toggle_script(results, context_indices, default_context):
     # Serialize the full results data for JavaScript
     import json
     
-    # To avoid timeout issues with large data, we can optimize the JSON serialization
-    # by directly serializing only the necessary data for each context
+    # Optimize the JSON serialization
     optimized_results = {}
-    for context_id in context_indices:
-        if context_id in results:
-            context_data = results[context_id]
-            optimized_results[context_id] = {
-                "tokens": context_data["tokens"],
-                "preview": context_data.get("preview", ""),
-                "checkpoints": context_data["checkpoints"]
-            }
+    
+    for model_size, results in all_models_results.items():
+        optimized_results[model_size] = {}
+        for context_id in context_indices:
+            if context_id in results:
+                context_data = results[context_id]
+                optimized_results[model_size][context_id] = {
+                    "tokens": context_data["tokens"],
+                    "preview": context_data.get("preview", ""),
+                    "checkpoints": context_data["checkpoints"]
+                }
     
     # Use the optimized results for serialization
     results_json = json.dumps(optimized_results)
@@ -670,10 +727,18 @@ def create_toggle_script(results, context_indices, default_context):
     return f"""
     <script>
         // Store the full results data for dynamic processing
-        const fullResults = {results_json};
+        const fullModelResults = {results_json};
         const contextIndices = {json.dumps(context_indices)};
         let currentView = 'raw';
         let currentContext = "{default_context}";
+        let currentModelSize = "{default_model_size}";
+        
+        // Update model size when dropdown changes
+        function updateModelSize() {{
+            const dropdown = document.getElementById('model-dropdown');
+            currentModelSize = dropdown.value;
+            updateVisualization();
+        }}
 
         // Parse and apply interval selections
         function applyIntervals() {{
@@ -787,7 +852,7 @@ def create_toggle_script(results, context_indices, default_context):
             updateVisualization();
         }}
         
-        // Update the visualization based on selected steps and view
+        // Update the visualization based on selected steps, view, and model
         function updateVisualization() {{
             const container = document.getElementById('visualization-container');
             const selectedSteps = getSelectedSteps();
@@ -798,22 +863,79 @@ def create_toggle_script(results, context_indices, default_context):
                 return;
             }}
             
+            // Get current model's results
+            const modelResults = fullModelResults[currentModelSize] || {{}};
+            
             // Generate HTML for the current view and selected steps
             let html = '';
             
             if (currentView === 'raw') {{
-                html = createSingleContextRawHtml(fullResults, currentContext, selectedSteps);
+                html = createSingleContextRawHtml(modelResults, currentContext, selectedSteps);
             }} else {{
-                html = createSingleContextStepDiffHtml(fullResults, currentContext, selectedSteps);
+                html = createSingleContextStepDiffHtml(modelResults, currentContext, selectedSteps);
             }}
             
             container.innerHTML = html;
         }}
+
+        // Initialize the visualization when the page loads
+        document.addEventListener('DOMContentLoaded', function() {{
+            // Set default context and model
+            const contextDropdown = document.getElementById('context-dropdown');
+            if (contextDropdown) {{
+                contextDropdown.value = currentContext;
+            }}
+            
+            const modelDropdown = document.getElementById('model-dropdown');
+            if (modelDropdown) {{
+                modelDropdown.value = currentModelSize;
+            }}
+            
+            // Select evenly spaced steps (maximum 15)
+            const allCheckboxes = document.querySelectorAll('.step-checkbox');
+            const allSteps = Array.from(allCheckboxes);
+            
+            // First uncheck all steps
+            allSteps.forEach(cb => cb.checked = false);
+            
+            // If we have more than 15 steps, select evenly spaced ones
+            if (allSteps.length > 15) {{
+                // Calculate the step size to get approximately 15 evenly spaced steps
+                const stepSize = Math.max(1, Math.floor(allSteps.length / 15));
+                
+                // Select every nth step
+                for (let i = 0; i < allSteps.length; i += stepSize) {{
+                    if (allSteps[i]) {{
+                        allSteps[i].checked = true;
+                    }}
+                }}
+                
+                // Ensure we always include the first and last step for better context
+                if (allSteps[0]) {{
+                    allSteps[0].checked = true;
+                }}
+                if (allSteps[allSteps.length - 1]) {{
+                    allSteps[allSteps.length - 1].checked = true;
+                }}
+            }} else {{
+                // If we have 15 or fewer steps, select all of them
+                allSteps.forEach(cb => cb.checked = true);
+            }}
+            
+            // Update the visualization with the evenly spaced steps
+            updateVisualization();
+        }});
         
         // Create HTML for a single context with raw losses
         function createSingleContextRawHtml(results, contextId, selectedSteps) {{
             // Get data for the context
             const contextData = results[contextId];
+            if (!contextData) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context not available for this model size</div>
+                </div>`;
+            }}
+            
             const tokens = contextData["tokens"];
             const preview = contextData["preview"] || "";
             
@@ -971,11 +1093,15 @@ def create_toggle_script(results, context_indices, default_context):
         }}
         
         // Create HTML for a single context with step-by-step differences
-        // Create HTML for a single context with step-by-step differences
-        // Create HTML for a single context with step-by-step differences
         function createSingleContextStepDiffHtml(results, contextId, selectedSteps) {{
             // Get data for the context
             const contextData = results[contextId];
+            if (!contextData) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context not available for this model size</div>
+                </div>`;
+            }}
+            
             const tokens = contextData["tokens"];
             const preview = contextData["preview"] || "";
             
@@ -1428,19 +1554,20 @@ def create_single_context_raw_html(results, context_idx, selected_steps):
     html += "</div></div></div>"  # End token-grid, token-grid-wrapper, context-container
     return html
 
-def load_pertoken_data(model_name, dataset_name, base_dir=None, max_contexts=None, selected_steps=None):
+def load_pertoken_data(model_sizes, dataset_name, base_dir=None, max_contexts=None, selected_steps=None):
     """
-    Load and process the token and loss data for a specific model and dataset.
+    Load and process the token and loss data for multiple model sizes and a specific dataset.
     This function handles all the heavy CSV loading and data preprocessing.
     
     Args:
-        model_name: Name of the model to visualize
+        model_sizes: List of model sizes to visualize
         dataset_name: Name of the dataset to visualize
         base_dir: Base directory for trajectory data (or None for default)
         max_contexts: Maximum number of contexts to include (or None for all)
+        selected_steps: List of specific steps to include (or None for all)
         
     Returns:
-        Dictionary with processed results ready for visualization
+        Dictionary mapping model sizes to their processed results ready for visualization
     """
     # Set default base directory if not provided
     if base_dir is None:
@@ -1450,45 +1577,68 @@ def load_pertoken_data(model_name, dataset_name, base_dir=None, max_contexts=Non
     csv_dir = os.path.join(base_dir, "csv")
     tokens_dir = os.path.join(base_dir, "tokens")
     
-    # Load token data
+    # Load token data (only need to load once for the dataset)
     print('Loading token data...')
     tokens_dict = load_token_data(tokens_dir, dataset_name)
     if not tokens_dict:
         print(f"Error: No token data found for dataset '{dataset_name}'")
         return {}
     
-    # Load loss data
-    print('Loading loss data...')
-    df = load_loss_data(csv_dir, model_name, dataset_name, max_contexts)
-    if df.empty:
-        print(f"Error: No CSV data found for model '{model_name}' and dataset '{dataset_name}'")
+    # Store results for each model size
+    all_models_results = {}
+    
+    # Process each model size
+    for model_size in model_sizes:
+        model_name = f"{model_size}"
+        print(f'Loading loss data for {model_name}...')
+        
+        # Load loss data for this model size
+        df = load_loss_data(csv_dir, model_name, dataset_name, max_contexts)
+        if df.empty:
+            print(f"Warning: No CSV data found for model '{model_name}' and dataset '{dataset_name}'")
+            continue
+        
+        # Extract and organize data
+        results = extract_context_data(df, tokens_dict, max_contexts, selected_steps=selected_steps)
+        if not results:
+            print(f"Warning: No matching contexts found between CSV and token data for model '{model_name}'")
+            continue
+        
+        # Store results for this model size
+        all_models_results[model_size] = results
+    
+    if not all_models_results:
+        print(f"Error: No valid data found for any model size")
         return {}
     
-    # Extract and organize data
-    results = extract_context_data(df, tokens_dict, max_contexts, selected_steps=selected_steps)
-    if not results:
-        print(f"Error: No matching contexts found between CSV and token data")
-        return {}
-    
-    return results
+    return all_models_results
 
-def visualize_from_loaded_data(results, model_name, dataset_name, steps=None):
+def visualize_from_loaded_data(all_models_results, dataset_name, steps=None):
     """
     Create and display a per-token loss visualization using pre-loaded data.
     
     Args:
-        results: Dictionary with processed data from load_pertoken_data
-        model_name: Name of the model to visualize (for display purposes only)
+        all_models_results: Dictionary mapping model sizes to their results
         dataset_name: Name of the dataset to visualize (for display purposes only)
         steps: List of steps to display initially (or None for all)
         
     Returns:
         IPython.display.HTML object
     """
+    # Check if we have any model data
+    if not all_models_results:
+        return HTML("<div>Error: No model data available</div>")
+    
+    # If steps is None, try to get available steps from the first model's first context
     if steps is None:
-        steps = list(results.values())[0]["checkpoints"].keys()
+        default_model = next(iter(all_models_results.values()))
+        if default_model:
+            first_context = next(iter(default_model.values()))
+            if first_context and "checkpoints" in first_context:
+                steps = list(first_context["checkpoints"].keys())
+    
     # Create HTML visualization
-    html_content = create_pertoken_html(results, steps, model_name, dataset_name)
+    html_content = create_pertoken_html(all_models_results, steps, dataset_name=dataset_name)
     
     # Return as displayable HTML
     return HTML(html_content)
