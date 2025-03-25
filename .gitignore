@@ -179,3 +179,5 @@ samples
 # within datasets
 experiments
 datasets/experiments
+datasets/notebooks
+datasets/plotting

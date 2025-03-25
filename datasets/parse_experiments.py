@@ -18,7 +18,8 @@ def update_data_with_losses(data_dict, context_id, losses):
     for pos in range(len(losses)):
         col_name = f"context_{context_id}_pos_{pos}"
         if col_name not in data_dict:
-            data_dict[col_name] = []
+            # Initialize with NaN values for all previous steps
+            data_dict[col_name] = [np.nan] * (len(data_dict['step']) - 1)  # -1 because we're about to append for current step
         data_dict[col_name].append(losses[pos])
     
     return data_dict
@@ -28,6 +29,14 @@ def clean_and_save_dataframe(data_dict, output_path):
     if not data_dict['step']:  # Skip empty datasets
         return
     
+    # Ensure all columns have the same length
+    step_count = len(data_dict['step'])
+    print(f"Step count: {step_count}")
+    for col in data_dict:
+        if col != 'step' and len(data_dict[col]) < step_count:
+            # Fill missing values with NaN
+            data_dict[col].extend([np.nan] * (step_count - len(data_dict[col])))
+
     # Convert to DataFrame
     df = pd.DataFrame(data_dict)
     
@@ -86,6 +95,7 @@ def main():
     tokens_dir = os.path.join(base_dir, "tokens")
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(tokens_dir, exist_ok=True)
+    ignore_models = ["14m", "31m", "70m", "160m", "410m", "1b", "1.4b", "6.9b"]
     
     # Select a checkpoint step to extract tokens from
     # Choose a step that should exist for all models
@@ -95,6 +105,7 @@ def main():
     pkl_path = os.path.join(base_dir, "pkl")
     model_dirs = [d for d in os.listdir(pkl_path) 
                          if os.path.isdir(os.path.join(pkl_path, d))]
+    model_dirs = [d for d in model_dirs if d not in ignore_models]
     
     # Flag to track if we've already extracted tokens
     tokens_extracted = False
