@@ -299,7 +299,10 @@ def create_html_styles():
             flex-direction: column;
             align-items: center;
             gap: 15px;
+            width: 100%;  /* Set explicit width */
         }
+        
+        /* Add this to center the toggle group */
         .toggle-group {
             display: inline-flex;
             gap: 20px;
@@ -307,7 +310,23 @@ def create_html_styles():
             padding: 10px 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin: 0 auto;  /* This centers the element */
+            justify-content: center;  /* Center content inside */
         }
+        
+        /* Fix the model selector */
+        #model-selector, 
+        #model-comparison-container {
+            width: 100%;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: center;
+        }
+        
+        /* The rest of your original CSS follows... */
         .toggle-label {
             display: flex;
             align-items: center;
@@ -366,6 +385,7 @@ def create_html_styles():
         .step-selector-buttons {
             display: flex;
             gap: 10px;
+            justify-content: center;  /* Center buttons */
         }
         .step-selector-button {
             padding: 8px 15px;
@@ -386,6 +406,8 @@ def create_html_styles():
             align-items: center;
             gap: 10px;
             margin-bottom: 15px;
+            width: 100%;  /* Add width */
+            max-width: 800px;  /* Add max-width to match step-selector */
         }
         .context-selector-title {
             font-weight: bold;
@@ -568,6 +590,8 @@ def create_html_styles():
             align-items: center;
             gap: 10px;
             margin-bottom: 15px;
+            width: 100%;  /* Add width */
+            max-width: 800px;  /* Add max-width to match others */
         }
         .model-selector-title {
             font-weight: bold;
@@ -582,6 +606,32 @@ def create_html_styles():
             min-width: 300px;
             background-color: white;
         }
+        .model-comparison {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            width: 100%;
+        }
+        .model-comparison-selectors {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .comparison-vs {
+            font-weight: bold;
+            font-size: 16px;
+            color: #555;
+        }
+        /* Legend for model differences */
+        .model-diff-legend {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+            margin: 10px 0;
+        }
         @media (max-width: 768px) {
             .interval-selector {
                 width: 95%;
@@ -590,43 +640,52 @@ def create_html_styles():
                 width: 95%;
             }
         }
+        /* Add to your existing styles */
+        .diff-mode-buttons {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        .diff-mode-toggle {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .diff-mode-button {
+            padding: 8px 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f5f5f5;
+            color: #333;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .diff-mode-button:hover {
+            background-color: #e9e9e9;
+        }
+
+        .diff-mode-active {
+            background-color: #2c3e50;
+            color: white;
+            border-color: #2c3e50;
+        }
     </style>
     """
 
 def create_controls_html(all_steps, selected_steps, categories, model_sizes, default_model_size):
     """
     Create HTML for step selection and visualization toggle controls.
-    
-    Args:
-        all_steps: List of all available steps - THIS SHOULD BE LIMITED TO JUST THE SELECTED STEPS NOW
-        selected_steps: List of currently selected steps
-        categories: Dictionary of context categories (context_id -> label)
-        model_sizes: List of available model sizes
-        default_model_size: Default model size to show initially
-        
-    Returns:
-        HTML string with controls
     """
     # Start the controls container
     html = '''
     <div class="controls-container">
-    '''
-    
-    # Add model selector dropdown
-    html += '''
-        <div class="model-selector">
-            <div class="model-selector-title">Select Model Size:</div>
-            <select id="model-dropdown" class="model-dropdown" onchange="updateModelSize()">
-    '''
-
-    # Add model sizes to dropdown
-    for model_size in model_sizes:
-        selected = "selected" if model_size == default_model_size else ""
-        html += f'<option value="{model_size}" {selected}>Model Size: {model_size}</option>'
-    
-    html += '''
-            </select>
-        </div>
     '''
     
     # Add step selector
@@ -685,6 +744,36 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
                 <input type="radio" name="viewToggle" value="diff" onchange="toggleView('diff')">
                 Step-by-Step Differences
             </label>
+            <label class="toggle-label">
+                <input type="radio" name="viewToggle" value="modeldiff" onchange="toggleView('modeldiff')">
+                Model Size Differences
+            </label>
+        </div>
+
+        <div id="model-selector" class="model-selector">
+            <div class="model-selector-title">Select Model Size:</div>
+            <select id="model-dropdown" class="model-dropdown" onchange="updateModelSize()">
+    '''
+
+    # Add model sizes to dropdown
+    for model_size in model_sizes:
+        selected = "selected" if model_size == default_model_size else ""
+        html += f'<option value="{model_size}" {selected}>Model Size: {model_size}</option>'
+
+    html += '''
+            </select>
+        </div>
+        
+        <!-- Model comparison selectors (initially hidden) -->
+        <div id="model-comparison-container" style="display: none;" class="model-comparison">
+            <div class="model-selector-title">Compare Models:</div>
+            <div class="model-comparison-selectors">
+                <select id="model-base-dropdown" class="model-dropdown">
+                </select>
+                <span class="comparison-vs">vs</span>
+                <select id="model-compare-dropdown" class="model-dropdown">
+                </select>
+            </div>
         </div>
     </div>'''
 
@@ -732,11 +821,22 @@ def create_toggle_script(all_models_results, context_indices,
         let currentView = 'raw';
         let currentContext = "{default_context}";
         let currentModelSize = "{default_model_size}";
+        let diffMode = 'absolute'; 
         
         // Update model size when dropdown changes
         function updateModelSize() {{
             const dropdown = document.getElementById('model-dropdown');
             currentModelSize = dropdown.value;
+            updateVisualization();
+        }}
+
+        // Update when base model dropdown changes
+        function updateBaseModel() {{
+            updateVisualization();
+        }}
+
+        // Update when compare model dropdown changes
+        function updateCompareModel() {{
             updateVisualization();
         }}
 
@@ -819,8 +919,104 @@ def create_toggle_script(all_models_results, context_indices,
         }}
         
         // Toggle between raw and diff views
+        // Replace the existing toggleView function with this updated version:
         function toggleView(viewType) {{
             currentView = viewType;
+            
+            // Show/hide model comparison dropdowns based on view type
+            const modelSelectorContainer = document.getElementById('model-selector');
+            const modelComparisonContainer = document.getElementById('model-comparison-container');
+            
+            if (viewType === 'modeldiff') {{
+            // For model diff view, hide single model selector and show comparison dropdowns
+            if (modelSelectorContainer) {{
+                modelSelectorContainer.style.display = 'none';
+            }}
+            
+            const modelComparisonContainer = document.getElementById('model-comparison-container');
+            
+            if (modelComparisonContainer) {{
+                modelComparisonContainer.style.display = 'flex';
+
+                // Modify this section to include the labels
+                const modelComparisonSelectors = document.querySelector('.model-comparison-selectors');
+                if (modelComparisonSelectors) {{
+                    modelComparisonSelectors.innerHTML = `
+                        <div class="dropdown-with-label">
+                            <span class="model-label"><b>(A)</b></span>
+                            <select id="model-base-dropdown" class="model-dropdown"></select>
+                        </div>
+                        <span class="comparison-vs">vs</span>
+                        <div class="dropdown-with-label">
+                            <span class="model-label"><b>(B)</b></span>
+                            <select id="model-compare-dropdown" class="model-dropdown"></select>
+                        </div>
+                    `;
+                }}
+                            
+                // Populate the model comparison dropdowns
+                const baseDropdown = document.getElementById('model-base-dropdown');
+                const compareDropdown = document.getElementById('model-compare-dropdown');
+                
+                if (baseDropdown && compareDropdown) {{
+                    // Clear existing options
+                    baseDropdown.innerHTML = '';
+                    compareDropdown.innerHTML = '';
+                    
+                    // Add options for all model sizes
+                    const modelSizes = Object.keys(fullModelResults);
+                    
+                    modelSizes.forEach((size, index) => {{
+                        const baseOption = document.createElement('option');
+                        baseOption.value = size;
+                        baseOption.textContent = `Model Size: ${{size}}`;
+                        
+                        const compareOption = document.createElement('option');
+                        compareOption.value = size;
+                        compareOption.textContent = `Model Size: ${{size}}`;
+                        
+                        baseDropdown.appendChild(baseOption);
+                        compareDropdown.appendChild(compareOption);
+                        
+                        // Select different models by default if possible
+                        if (index === 0) {{
+                            baseOption.selected = true;
+                        }}
+                        if (index === Math.min(1, modelSizes.length - 1)) {{
+                            compareOption.selected = true;
+                        }}
+                    }});
+                }}
+                
+                // Check if buttons already exist to avoid duplicates
+                if (!document.getElementById('diff-mode-buttons')) {{
+                    const diffModeButtons = document.createElement('div');
+                    diffModeButtons.id = 'diff-mode-buttons';
+                    diffModeButtons.className = 'diff-mode-buttons';
+                    diffModeButtons.innerHTML = `
+                        <div class="model-selector-title" style="margin-top: 10px;">Difference Mode:</div>
+                        <div class="diff-mode-toggle">
+                            <button id="absolute-diff-btn" class="diff-mode-button diff-mode-active" onclick="setDiffMode('absolute')">
+                                Absolute (B-A)
+                            </button>
+                            <button id="relative-diff-btn" class="diff-mode-button" onclick="setDiffMode('relative')">
+                                Relative (B/A)
+                            </button>
+                        </div>
+                    `;
+                    modelComparisonContainer.appendChild(diffModeButtons);
+                }}
+            }}
+        }} else {{
+                // For raw or step diff view, show single model selector and hide comparison dropdowns
+                if (modelSelectorContainer) {{
+                    modelSelectorContainer.style.display = 'flex';
+                }}
+                if (modelComparisonContainer) {{
+                    modelComparisonContainer.style.display = 'none';
+                }}
+            }}
+            
             updateVisualization();
         }}
         
@@ -851,8 +1047,30 @@ def create_toggle_script(all_models_results, context_indices,
             currentContext = dropdown.value;
             updateVisualization();
         }}
+
+        // Add this new function to set the difference mode
+        function setDiffMode(mode) {{
+            diffMode = mode;
+            
+            // Update button states
+            const absoluteBtn = document.getElementById('absolute-diff-btn');
+            const relativeBtn = document.getElementById('relative-diff-btn');
+            
+            if (absoluteBtn && relativeBtn) {{
+                if (mode === 'absolute') {{
+                    absoluteBtn.classList.add('diff-mode-active');
+                    relativeBtn.classList.remove('diff-mode-active');
+                }} else {{
+                    absoluteBtn.classList.remove('diff-mode-active');
+                    relativeBtn.classList.add('diff-mode-active');
+                }}
+            }}
+            
+            // Update the visualization
+            updateVisualization();
+        }}
         
-        // Update the visualization based on selected steps, view, and model
+        // Replace the existing updateVisualization function with this updated version
         function updateVisualization() {{
             const container = document.getElementById('visualization-container');
             const selectedSteps = getSelectedSteps();
@@ -863,16 +1081,27 @@ def create_toggle_script(all_models_results, context_indices,
                 return;
             }}
             
-            // Get current model's results
-            const modelResults = fullModelResults[currentModelSize] || {{}};
-            
-            // Generate HTML for the current view and selected steps
+            // Generate HTML based on the current view
             let html = '';
             
-            if (currentView === 'raw') {{
-                html = createSingleContextRawHtml(modelResults, currentContext, selectedSteps);
+            if (currentView === 'modeldiff') {{
+                // For model diff view, get data from both selected models
+                const baseModelSize = document.getElementById('model-base-dropdown').value;
+                const compareModelSize = document.getElementById('model-compare-dropdown').value;
+                
+                const baseModelResults = fullModelResults[baseModelSize] || {{}};
+                const compareModelResults = fullModelResults[compareModelSize] || {{}};
+                
+                html = createModelDiffHtml(baseModelResults, compareModelResults, currentContext, selectedSteps);
             }} else {{
-                html = createSingleContextStepDiffHtml(modelResults, currentContext, selectedSteps);
+                // For raw or step-diff views, use the single selected model
+                const modelResults = fullModelResults[currentModelSize] || {{}};
+                
+                if (currentView === 'raw') {{
+                    html = createSingleContextRawHtml(modelResults, currentContext, selectedSteps);
+                }} else {{
+                    html = createSingleContextStepDiffHtml(modelResults, currentContext, selectedSteps);
+                }}
             }}
             
             container.innerHTML = html;
@@ -889,6 +1118,16 @@ def create_toggle_script(all_models_results, context_indices,
             const modelDropdown = document.getElementById('model-dropdown');
             if (modelDropdown) {{
                 modelDropdown.value = currentModelSize;
+            }}
+
+            const baseModelDropdown = document.getElementById('model-base-dropdown');
+            if (baseModelDropdown) {{
+                baseModelDropdown.addEventListener('change', updateBaseModel);
+            }}
+            
+            const compareModelDropdown = document.getElementById('model-compare-dropdown');
+            if (compareModelDropdown) {{
+                compareModelDropdown.addEventListener('change', updateCompareModel);
             }}
             
             // Select evenly spaced steps (maximum 15)
@@ -1377,6 +1616,264 @@ def create_toggle_script(all_models_results, context_indices,
                                 `;
                             }}
                         }}
+                    }}
+                    
+                    html += '</div>'; // End token-row
+                }}
+                
+                // Add spacing between chunks
+                html += '<div style="height: 20px;"></div>';
+            }}
+            
+            html += "</div></div></div>"; // End token-grid, token-grid-wrapper, context-container
+            return html;
+        }}
+
+        // Add this new function to create the model diff visualization
+        function createModelDiffHtml(baseModelResults, compareModelResults, contextId, selectedSteps) {{
+            // Get data for the context from both models
+            const baseContextData = baseModelResults[contextId];
+            const compareContextData = compareModelResults[contextId];
+            
+            // Check if context exists in both models
+            if (!baseContextData || !compareContextData) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context data not available for both models</div>
+                </div>`;
+            }}
+            
+            const tokens = baseContextData["tokens"]; // Use tokens from base model
+            const preview = baseContextData["preview"] || "";
+            
+            // Get the first model size for display
+            const baseModelSize = document.getElementById('model-base-dropdown').value;
+            const compareModelSize = document.getElementById('model-compare-dropdown').value;
+            
+            // Ensure steps are filtered and exist in both model datasets
+            const steps = selectedSteps
+                .filter(step => 
+                    baseContextData["checkpoints"][step] && 
+                    baseContextData["checkpoints"][step]["losses"] &&
+                    compareContextData["checkpoints"][step] && 
+                    compareContextData["checkpoints"][step]["losses"]
+                )
+                .sort((a, b) => parseInt(a) - parseInt(b));
+            
+            // If no matching steps, show an error
+            if (steps.length === 0) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Model Differences)</div>
+                    <div>No matching steps found in both models.</div>
+                </div>`;
+            }}
+            
+            // Calculate the maximum difference to use for color scaling
+            let allDiffs = [];
+            for (const step of steps) {{
+                const baseLosses = baseContextData["checkpoints"][step]["losses"];
+                const compareLosses = compareContextData["checkpoints"][step]["losses"];
+                
+                for (let i = 0; i < Math.min(baseLosses.length, compareLosses.length); i++) {{
+                    if (baseLosses[i] === null || compareLosses[i] === null) continue;
+                    
+                    // Calculate difference based on the current mode
+                    let diff;
+                    if (diffMode === 'absolute') {{
+                        diff = compareLosses[i] - baseLosses[i];
+                    }} else {{ // relative
+                        // Avoid division by zero
+                        if (baseLosses[i] === 0) continue;
+                        diff = (compareLosses[i] / baseLosses[i]) - 1; // Subtract 1 so 0 means no change
+                    }}
+                    
+                    allDiffs.push(Math.abs(diff));
+                }}
+            }}
+            
+            // Filter out very small differences and calculate a reasonable max (95th percentile)
+            const significantDiffs = allDiffs.filter(d => d > 0.00001);
+            let maxDiff = 0.1;  // Default fallback
+            
+            if (significantDiffs.length > 0) {{
+                significantDiffs.sort((a, b) => a - b);
+                // Use 95th percentile to avoid outliers
+                maxDiff = significantDiffs[Math.floor(0.95 * significantDiffs.length)];
+            }}
+            
+            // Update the title text based on the difference mode
+            let titleText = '';
+            if (diffMode === 'absolute') {{
+                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} - ${{baseModelSize}})`;
+            }} else {{
+                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} / ${{baseModelSize}})`;
+            }}
+            
+            // Start building HTML
+            let html = `
+                <div class="context-container">
+                    <div class="context-title">${{titleText}}</div>
+                    <div class="model-diff-legend">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(0, 255, 0);"></div>
+                            <span>${{compareModelSize}} performs better than ${{baseModelSize}} (lower loss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
+                            <span>No significant difference</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(255, 0, 0);"></div>
+                            <span>${{compareModelSize}} performs worse than ${{baseModelSize}} (higher loss)</span>
+                        </div>
+                    </div>
+            `;
+            
+            // Get token count from base model's first checkpoint
+            const firstStep = steps[0];
+            const firstLosses = baseContextData["checkpoints"][firstStep]["losses"];
+            const tokenCount = firstLosses ? firstLosses.length : 0;
+            
+            // Calculate chunks for wrapping
+            const tokensPerRow = 20;
+            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            
+            // Create the wrapped token grid
+            html += `<div class="token-grid-wrapper"><div class="token-grid">`;
+            
+            // Process tokens in chunks
+            for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {{
+                const startIdx = chunkIdx * tokensPerRow;
+                const endIdx = Math.min(startIdx + tokensPerRow, tokenCount);
+                
+                // Add position header row for this chunk
+                html += '<div class="token-row-header">';
+                html += `<div class="header-cell" style="width: 235px;">Position</div>`;
+                for (let i = startIdx; i < endIdx; i++) {{
+                    html += `<div class="header-cell">${{i}}</div>`;
+                }}
+                html += '</div>';
+                
+                // Add token text header row for this chunk
+                html += '<div class="token-row-header">';
+                html += `<div class="header-cell token-header" style="width: 235px;">Token</div>`;
+                for (let i = startIdx; i < endIdx; i++) {{
+                    if (i < tokens.length) {{
+                        // Handle special characters
+                        let token = tokens[i];
+                        let displayToken = token;
+                        if (displayToken === ' ') {{
+                            displayToken = '␣';
+                        }} else if (displayToken === '\\n') {{
+                            displayToken = '\\\\n';
+                        }}
+                        html += `<div class="header-cell">${{displayToken}}</div>`;
+                    }} else {{
+                        html += `<div class="header-cell">-</div>`;
+                    }}
+                }}
+                html += '</div>';
+                
+                // Add a row for each step
+                for (const step of steps) {{
+                    const baseLosses = baseContextData["checkpoints"][step]["losses"];
+                    const compareLosses = compareContextData["checkpoints"][step]["losses"];
+                    
+                    // Add step row
+                    html += '<div class="token-row">';
+                    html += `<div class="step-header" style="width: 235px;">Step ${{step}}</div>`;
+                    
+                    // Add diff-colored cells for this chunk
+                    for (let i = startIdx; i < endIdx; i++) {{
+                        // Get token for this position
+                        let displayToken = '-';
+                        if (i < tokens.length) {{
+                            const token = tokens[i];
+                            displayToken = token;
+                            if (displayToken === ' ') {{
+                                displayToken = '␣';
+                            }} else if (displayToken === '\\n') {{
+                                displayToken = '\\\\n';
+                            }}
+                        }}
+                        
+                        // Handle cases where data is missing
+                        if (i >= baseLosses.length || i >= compareLosses.length || 
+                            baseLosses[i] === null || compareLosses[i] === null) {{
+                            html += `
+                                <div class="token-cell tooltip" style="background-color: #ddd;">
+                                    ${{displayToken}}
+                                    <span class="tooltiptext">Position: ${{i}}<br>Missing data</span>
+                                </div>
+                            `;
+                            continue;
+                        }}
+                        
+                        // Calculate difference based on the current mode
+                        const baseLoss = baseLosses[i];
+                        const compareLoss = compareLosses[i];
+                        let diff, diffDisplay, symbol = "";
+                        
+                        if (diffMode === 'absolute') {{
+                            diff = compareLoss - baseLoss;
+                            diffDisplay = diff.toFixed(4);
+                        }} else {{ // relative
+                            if (baseLoss === 0) {{
+                                // Handle division by zero
+                                if (compareLoss === 0) {{
+                                    diff = 0; // Both are zero, no difference
+                                    diffDisplay = "0%";
+                                }} else {{
+                                    diff = 1; // Base is zero but compare isn't, large difference
+                                    diffDisplay = "∞"; // Infinity symbol for division by zero
+                                }}
+                            }} else {{
+                                diff = (compareLoss / baseLoss) - 1;
+                                diffDisplay = (diff * 100).toFixed(2) + "%"; // Format as percentage
+                            }}
+                        }}
+                        
+                        // Use a threshold to ignore very small changes
+                        const significanceThreshold = diffMode === 'absolute' ? 0.001 : 0.01; // 1% for relative
+                        
+                        // Normalize difference for color intensity
+                        let normalizedDiff = 0;
+                        if (maxDiff > 0 && Math.abs(diff) > significanceThreshold) {{
+                            normalizedDiff = Math.min(Math.abs(diff) / maxDiff, 1);
+                        }}
+                        
+                        let r, g, b;
+                        
+                        // Green for improvement in compare model (lower loss), red for worse performance (higher loss)
+                        if (diff < -significanceThreshold) {{  // Compare model has lower loss (better)
+                            r = 255 * (1 - normalizedDiff);
+                            g = 255;
+                            b = 255 * (1 - normalizedDiff);
+                            symbol = "↓";
+                        }} else if (diff > significanceThreshold) {{  // Compare model has higher loss (worse)
+                            r = 255;
+                            g = 255 * (1 - normalizedDiff);
+                            b = 255 * (1 - normalizedDiff);
+                            symbol = "↑";
+                        }} else {{  // No significant difference
+                            r = 255;
+                            g = 255;
+                            b = 255;
+                            symbol = "=";
+                        }}
+                        
+                        const color = `rgb(${{r}}, ${{g}}, ${{b}})`;
+                        
+                        html += `
+                            <div class="token-cell tooltip" style="background-color:${{color}};">
+                                ${{displayToken}}
+                                <span class="tooltiptext">
+                                    Position: ${{i}}<br>
+                                    ${{baseModelSize}} loss: ${{baseLoss.toFixed(4)}}<br>
+                                    ${{compareModelSize}} loss: ${{compareLoss.toFixed(4)}}<br>
+                                    ${{diffMode === 'absolute' ? 'Difference: ' : 'Relative Change: '}}${{diffDisplay}}
+                                </span>
+                            </div>
+                        `;
                     }}
                     
                     html += '</div>'; // End token-row
