@@ -300,6 +300,35 @@ def create_html_styles():
             align-items: center;
             gap: 15px;
             width: 100%;  /* Set explicit width */
+            position: sticky;  /* Add this line */
+            top: 0;           /* Add this line */
+            background-color: white;  /* Add this line */
+            z-index: 100;     /* Add this line */
+            padding: 10px 0;  /* Add this line */
+        }
+        .scrolling-controls {
+            margin: 20px 0;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            width: 100%;
+        }
+
+        .sticky-controls {
+            position: sticky;
+            top: 0;
+            background-color: white;
+            z-index: 100;
+            padding: 10px 0;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 15px;
         }
         
         /* Add this to center the toggle group */
@@ -683,13 +712,10 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
     """
     Create HTML for step selection and visualization toggle controls.
     """
-    # Start the controls container
+    # Start with completely separate containers
     html = '''
-    <div class="controls-container">
-    '''
-    
-    # Add step selector
-    html += '''
+    <!-- Regular scrolling controls -->
+    <div class="scrolling-controls">
         <div class="step-selector">
             <div class="step-selector-title">Select Checkpoints to Display:</div>
             <div class="step-checkboxes">
@@ -721,6 +747,7 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
             </div>
         </div>
 
+        <!-- Context selector now in the non-sticky part -->
         <div class="context-selector">
             <div class="context-selector-title">Select Context:</div>
             <select id="context-dropdown" class="context-dropdown" onchange="updateContext()">
@@ -733,7 +760,10 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
     html += '''
             </select>
         </div>
+    </div>
 
+    <!-- Separate sticky controls - now only contains view toggle and model selection -->
+    <div class="sticky-controls">
         <!-- Primary view toggle -->
         <div class="toggle-group">
             <label class="toggle-label">
@@ -775,7 +805,8 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
                 </select>
             </div>
         </div>
-    </div>'''
+    </div>
+    '''
 
     return html
 
