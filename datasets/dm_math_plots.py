@@ -212,7 +212,8 @@ def process_all_data(token_data, few_shot_losses, zero_shot_losses):
     }
 
 def create_loss_visualizations(few_shot_full, few_shot_answer, zero_shot_full, zero_shot_answer, 
-                              full_merged_df=None, answer_merged_df=None, use_log_scale=True, ):
+                              full_merged_df=None, answer_merged_df=None, use_log_scale=True, 
+                              model_size = None, axes_ranges = None):
     """
     Create a visualization of loss metrics with an option to toggle between log and linear scales.
     
@@ -457,7 +458,7 @@ def create_loss_visualizations(few_shot_full, few_shot_answer, zero_shot_full, z
     fig.update_layout(
         height=900,
         width=1800,
-        title="Comparison of Loss Types: Few-Shot vs. Zero-Shot",
+        title=f"Pythia {model_size} - dm_mathematics",
         plot_bgcolor='rgba(255,255,255,1)',
         paper_bgcolor='rgba(255,255,255,1)',
         hovermode='closest',
@@ -545,30 +546,36 @@ def create_loss_visualizations(few_shot_full, few_shot_answer, zero_shot_full, z
                 range=y_range,  # Set fixed range for each y-axis
                 row=i, col=j
             )
+
+    if axes_ranges is not None:
+        for (row, col), (y_min, y_max) in axes_ranges.items():
+            fig.update_yaxes(range=[y_min, y_max], row = row, col = col)
+    
+    # Add this code inside the create_loss_visualizations function
+# after all the other axes updates (near the end of the function)
+
+    # Add thicker axis lines for all plots
+    for i in range(1, 3):
+        for j in range(1, 4):
+            # Standard axis lines
+            # fig.update_xaxes(
+            #     linewidth=1.5,        # Regular axis line thickness
+            #     linecolor='black',
+            #     row=i, col=j
+            # )
+            
+            fig.update_yaxes(
+                linewidth=1.5,        # Regular axis line thickness
+                linecolor='black',
+                row=i, col=j
+            )
+            
+            # Add prominent zeroline for all plots
+            fig.update_yaxes(
+                zeroline=True,
+                zerolinewidth=1.5,      # Thicker zero line
+                zerolinecolor='black',
+                row=i, col=j
+            )
     
     return fig
-
-# Example usage
-# if __name__ == "__main__":
-#     # Load data
-#     token_data = load_token_data("path_to_token_file.pkl")
-#     few_shot_losses = load_losses_data("path_to_few_shot_losses.csv")
-#     zero_shot_losses = load_losses_data("path_to_zero_shot_losses.csv")
-    
-#     # Process all data at once and get all dataframes
-#     all_data = process_all_data(token_data, few_shot_losses, zero_shot_losses)
-    
-#     # Create visualization using the pre-processed data
-#     fig = create_loss_visualizations(
-#         all_data['few_shot_full'],
-#         all_data['few_shot_answer'],
-#         all_data['zero_shot_full'],
-#         all_data['zero_shot_answer'],
-#         all_data['full_merged'],
-#         all_data['answer_merged'],
-#         use_log_scale=True
-#     )
-    
-#     # Display or save the figure
-#     fig.show()
-#     # fig.write_html("loss_comparison.html")  # Uncomment to save as HTML

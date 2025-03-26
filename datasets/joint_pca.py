@@ -3,13 +3,53 @@ import pandas as pd
 import numpy as np
 import glob
 from tqdm import tqdm
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, SparsePCA
 from sklearn.preprocessing import StandardScaler
 from typing import Dict, List, Optional, Tuple, Union
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import pickle
+from io import StringIO
+import openpyxl
+
+### LOAD DATA ###
+
+def load_token_mapping(experiment_name, dataset_name):
+    """
+    Load token mapping from the tokens pickle file.
+    
+    Args:
+        experiment_name (str): Name of the experiment (e.g., "EXP000")
+        dataset_name (str): Name of the dataset (e.g., "dm_mathematics")
+    
+    Returns:
+        dict: Dictionary mapping context_id and token_position to actual token values
+    """
+    # Construct the path to the tokens pickle file
+    tokens_path = f"/Users/liam/quests/lsoc-psych/datasets/experiments/{experiment_name}/trajectories/tokens/{dataset_name}_tokens.pkl"
+    
+    # Load the pickle file
+    try:
+        with open(tokens_path, 'rb') as f:
+            token_data = pickle.load(f)
+    except Exception as e:
+        print(f"Error loading token file: {e}")
+        return None
+    
+    # Create a lookup dictionary for token mapping
+    token_mapping = {}
+    
+    # Process based on the structure of the token data
+    # This structure might need adjustment based on the actual format
+    for context_id, context_data in token_data.items():
+        for token_idx, token_value in enumerate(context_data):
+            # Create a key in format that matches your column names
+            key = f"context_{context_id}_pos_{token_idx}"
+            token_mapping[key] = token_value
+    
+    return token_mapping
+
 
 def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column_fraction=1.0):
     """
@@ -107,6 +147,8 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
         
     return ordered_trajectory_data
 
+### APPLY TRAJECTORY PCA ###
+
 class TrajectoryPCA:
     """
     Class for performing PCA on concatenated trajectory data across multiple model sizes.
@@ -114,29 +156,57 @@ class TrajectoryPCA:
     This class handles:
     1. Concatenating trajectory data from different model sizes
     2. Applying PCA to the concatenated data
-    3. Transforming the original trajectories into the PCA space
-    4. Storing the transformed trajectories back in the original data structure
+    3. Optionally applying sparse PCA to the residual matrix after regular PCA
+    4. Transforming the original trajectories into the PCA space (both regular and sparse components)
+    5. Storing the transformed trajectories back in the original data structure
     """
     
-    def __init__(self, trajectory_data: Dict[str, pd.DataFrame], start_step):
+    def __init__(self, trajectory_data: Dict[str, pd.DataFrame], start_step, 
+                 n_components: int = 10, n_sparse_components: int = 0, scale: bool = False,
+                 sparse_pca_params: Optional[Dict] = None, run_at_init: bool = False):
         """
         Initialize TrajectoryPCA with trajectory data.
         
         Args:
             trajectory_data (dict): Dictionary where keys are model sizes and 
-                                   values are the corresponding dataframes
+                                    values are the corresponding dataframes
+            start_step: Starting step to include in the analysis
+            n_components (int): Number of regular PCA components to use
+            n_sparse_components (int): Number of sparse PCA components to extract from residuals
+            scale (bool): Whether to standardize the data before PCA
+            sparse_pca_params (dict, optional): Parameters for the sparse PCA
+            run_at_init (bool): Whether to run the PCA pipeline during initialization
         """
+        # Input data and parameters
         self.trajectory_data = trajectory_data
         self.start_step = start_step
+        self.n_components = n_components
+        self.n_sparse_components = n_sparse_components
+        self.scale = scale
+        self.sparse_pca_params = sparse_pca_params or {}
+        
+        # Filter data by start_step
         for model_size in self.trajectory_data:
-            self.trajectory_data[model_size] = self.trajectory_data[model_size][self.trajectory_data[model_size]['step'] >= start_step]
+            self.trajectory_data[model_size] = self.trajectory_data[model_size][
+                self.trajectory_data[model_size]['step'] >= start_step
+            ]
 
+        # Model attributes
         self.model_sizes = list(trajectory_data.keys())
         self.pca = None
+        self.sparse_pca = None
         self.scaler = None
+        
+        # Data containers
         self.common_columns = None
         self.concatenated_matrix = None
+        self.raw_concatenated_matrix = None
+        self.pca_residual_matrix = None
         self.row_indices = None
+        
+        # Run pipeline at initialization if requested
+        if run_at_init:
+            self.run_pca_pipeline()
         
     def find_common_columns(self) -> List[str]:
         """
@@ -145,10 +215,10 @@ class TrajectoryPCA:
         Returns:
             list: List of common column names
         """
-        # Start with all columns from the first model
         if not self.model_sizes:
             raise ValueError("No model sizes found in trajectory data")
             
+        # Start with all columns from the first model
         common_cols = set(self.trajectory_data[self.model_sizes[0]].columns)
         
         # Intersect with columns from other models
@@ -199,49 +269,79 @@ class TrajectoryPCA:
         concatenated = np.vstack(all_data)
         
         self.concatenated_matrix = concatenated
+        self.raw_concatenated_matrix = concatenated.copy()  # Store the original unmodified matrix
         self.row_indices = row_indices
         
         print(f"Concatenated matrix shape: {concatenated.shape}")
         return concatenated
     
-    def fit_pca(self, n_components: int = 10, scale: bool = True) -> PCA:
+    def fit_pca(self) -> Tuple[PCA, Optional[SparsePCA]]:
         """
-        Fit PCA on the concatenated trajectory data.
+        Fit PCA on the concatenated trajectory data, followed by sparse PCA on residuals if requested.
         
-        Args:
-            n_components (int): Number of PCA components to use
-            scale (bool): Whether to standardize the data before PCA
-            
         Returns:
-            PCA: Fitted PCA object
+            Tuple[PCA, Optional[SparsePCA]]: Fitted PCA and SparsePCA objects (if applicable)
         """
         if self.concatenated_matrix is None:
             self.concatenate_trajectories()
             
         # Scale the data if required
-        if scale:
+        if self.scale:
             self.scaler = StandardScaler()
             scaled_data = self.scaler.fit_transform(self.concatenated_matrix)
         else:
-            scaled_data = self.concatenated_matrix
+            scaled_data = self.concatenated_matrix  # PCA will handle centering internally
             
-        # Fit PCA
-        self.pca = PCA(n_components=n_components)
-        self.pca.fit(scaled_data)
+        # Fit regular PCA
+        self.pca = PCA(n_components=self.n_components)
+        pca_transformed = self.pca.fit_transform(scaled_data)
         
-        # Print explained variance
+        # Print explained variance for regular PCA
         explained_var = self.pca.explained_variance_ratio_
         cumulative_var = np.cumsum(explained_var)
         
-        print(f"Top {n_components} components explain {cumulative_var[-1]*100:.2f}% of variance")
+        print(f"Regular PCA: Top {self.n_components} components explain {cumulative_var[-1]*100:.2f}% of variance")
         print(f"Individual explained variance: {explained_var}")
         
-        return self.pca
+        # Calculate residuals after regular PCA
+        if self.n_sparse_components > 0:
+            # Calculate residuals using inverse_transform
+            pca_transformed = self.pca.transform(scaled_data)
+            reconstructed_data = self.pca.inverse_transform(pca_transformed)
+            self.pca_residual_matrix = scaled_data - reconstructed_data
+            
+            print(f"Residual matrix shape after regular PCA: {self.pca_residual_matrix.shape}")
+            
+            # Default sparse PCA parameters
+            default_sparse_params = {
+                'alpha': 1.0,  # L1 penalty parameter
+                'ridge_alpha': 0.01,  # Ridge penalty parameter
+                'max_iter': 1000,
+                'tol': 1e-6,
+                'random_state': 42
+            }
+            
+            # Update with user-provided parameters
+            sparse_params = {**default_sparse_params, **self.sparse_pca_params}
+            
+            # Fit sparse PCA on residuals
+            self.sparse_pca = SparsePCA(n_components=self.n_sparse_components, **sparse_params)
+            sparse_transformed = self.sparse_pca.fit_transform(self.pca_residual_matrix)
+            
+            # Calculate sparsity of components
+            component_sparsity = self.get_sparse_component_sparsity()
+                
+            print(f"Sparse PCA: {self.n_sparse_components} components extracted from residuals")
+            print(f"Sparsity of components (fraction of zero values): {component_sparsity}")
+        else:
+            self.sparse_pca = None
+            
+        return self.pca, self.sparse_pca
     
     def transform_trajectories(self) -> Dict[str, pd.DataFrame]:
         """
-        Transform the original trajectories into the PCA space and 
-        store them back in the trajectory data dictionary.
+        Transform the original trajectories into the PCA space (both regular and sparse if applicable)
+        and store them back in the trajectory data dictionary.
         
         Returns:
             dict: Dictionary of transformed trajectories for each model size
@@ -259,116 +359,114 @@ class TrajectoryPCA:
             
             # Scale if needed
             if self.scaler is not None:
-                model_data = self.scaler.transform(model_data)
+                processed_data = self.scaler.transform(model_data)
+            else:
+                processed_data = model_data  # PCA.transform will handle centering
                 
-            # Transform using PCA
-            transformed = self.pca.transform(model_data)
+            # Transform using regular PCA
+            pca_transformed = self.pca.transform(processed_data)
             
-            # Create a new dataframe with transformed data
-            component_cols = [f"PC{i+1}" for i in range(transformed.shape[1])]
-            transformed_df = pd.DataFrame(transformed, columns=component_cols)
+            # Create column names for regular PCA components
+            pca_component_cols = [f"PC{i+1}" for i in range(pca_transformed.shape[1])]
+            
+            # Initialize transformed DataFrame with regular PCA components
+            transformed_df = pd.DataFrame(pca_transformed, columns=pca_component_cols)
+            
+            # Add sparse PCA components if applicable
+            if self.sparse_pca is not None:
+                # Calculate residuals using inverse_transform
+                reconstructed_data = self.pca.inverse_transform(pca_transformed)
+                model_residuals = processed_data - reconstructed_data
+                
+                # Transform residuals using sparse PCA
+                sparse_transformed = self.sparse_pca.transform(model_residuals)
+                
+                # Create column names for sparse PCA components
+                sparse_component_cols = [f"SPC{i+1}" for i in range(sparse_transformed.shape[1])]
+                
+                # Add sparse components to DataFrame
+                sparse_df = pd.DataFrame(sparse_transformed, columns=sparse_component_cols)
+                transformed_df = pd.concat([transformed_df, sparse_df], axis=1)
             
             # Add the step column if it exists
             if 'step' in df.columns:
                 transformed_df['step'] = df['step'].values
                 
-            # Store the transformed data as a separate entry in the dictionary
-            # instead of trying to add it as a column
-            self.trajectory_data[f"{model_size}_transformed"] = transformed_df
+            # Store the transformed data
+            transformed_key = f"{model_size}_transformed"
+            self.trajectory_data[transformed_key] = transformed_df
             transformed_data[model_size] = transformed_df
             
         return transformed_data
     
-    def run_pca_pipeline(self, n_components: int = 10, scale: bool = True) -> Dict[str, pd.DataFrame]:
+    def run_pca_pipeline(self) -> Dict[str, pd.DataFrame]:
         """
-        Run the full PCA pipeline: find common columns, concatenate trajectories,
-        fit PCA, and transform trajectories.
+        Run the complete PCA pipeline using the instance parameters.
         
-        Args:
-            n_components (int): Number of PCA components to use
-            scale (bool): Whether to standardize the data before PCA
-            
         Returns:
             dict: Dictionary of transformed trajectories for each model size
         """
         self.find_common_columns()
         self.concatenate_trajectories()
-        self.fit_pca(n_components=n_components, scale=scale)
+        self.fit_pca()
         return self.transform_trajectories()
-    
-    # Add this method to the TrajectoryPCA class
 
-    def print_top_pc_loadings(self, num_components=5, top_n=10):
+    def get_sparse_component_sparsity(self):
         """
-        Print the top loading columns for each principal component.
-        
-        Args:
-            num_components (int): Number of principal components to show (default: 5)
-            top_n (int): Number of top loading features to show for each component (default: 10)
+        Calculate the sparsity of each sparse PCA component.
         
         Returns:
-            dict: Dictionary with PC numbers as keys and DataFrames of top loadings as values
+            list: List of sparsity values (fraction of zero values) for each component
         """
-        import pandas as pd
-        import numpy as np
-        
-        # Check if PCA has been fitted
-        if self.pca is None:
-            raise ValueError("PCA not fitted yet. Call fit_pca() first.")
-        
-        # Get the PCA components (loadings)
-        loadings = self.pca.components_
-        
-        # Get the explained variance ratio for each component
-        explained_var = self.pca.explained_variance_ratio_
-        
-        # Limit to specified number of components
-        num_components = min(num_components, loadings.shape[0])
-        
-        # Get the feature names
-        feature_names = self.common_columns
-        
-        # Dictionary to store top loadings dataframes
-        top_loadings_dict = {}
-        
-        # For each component
-        for i in range(num_components):
-            # Get the loadings for this component
-            component_loadings = loadings[i]
+        if self.sparse_pca is None:
+            return None
             
-            # Create a DataFrame with feature names and their loadings
-            loadings_df = pd.DataFrame({
-                'Feature': feature_names,
-                'Loading': component_loadings
-            })
+        component_sparsity = []
+        for component in self.sparse_pca.components_:
+            non_zero = np.count_nonzero(component)
+            sparsity = 1.0 - (non_zero / len(component))
+            component_sparsity.append(sparsity)
             
-            # Sort by absolute loading value (to get most influential features)
-            loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
-            loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
-            
-            # Get top N features
-            top_loadings = loadings_df.head(top_n)[['Feature', 'Loading']].reset_index(drop=True)
-            
-            # Store in the dictionary
-            top_loadings_dict[i+1] = top_loadings
-            
-            # Print the results
-            print(f"\nPrincipal Component {i+1} ({explained_var[i]*100:.2f}% variance)")
-            print("-" * 60)
-            pd.set_option('display.float_format', '{:.4f}'.format)
-            print(top_loadings.to_string(index=False))
+        return component_sparsity
+    
+    def get_sparse_component_variance(self, n_samples=1000):
+        """
+        Estimate the variance explained by sparse PCA components in the residual space.
         
-        return top_loadings_dict
-
-# Example usage:
-# 1. Load and run PCA
-# trajectory_data = load_trajectory_data("EXP001", "your_dataset")
-# pca_handler = TrajectoryPCA(trajectory_data, start_step=1000)
-# pca_handler.run_pca_pipeline(n_components=10, scale=True)
-# 
-# 2. Print top loadings
-# top_loadings = pca_handler.print_top_pc_loadings(num_components=5, top_n=10)
-
+        Args:
+            n_samples (int): Number of samples to use for variance estimation
+            
+        Returns:
+            np.ndarray: Array of explained variance ratios
+        """
+        if self.sparse_pca is None or self.pca_residual_matrix is None:
+            return None
+        
+        # Use a subset of samples if the residual matrix is very large
+        if self.pca_residual_matrix.shape[0] > n_samples:
+            indices = np.random.choice(self.pca_residual_matrix.shape[0], n_samples, replace=False)
+            residual_subset = self.pca_residual_matrix[indices]
+        else:
+            residual_subset = self.pca_residual_matrix
+        
+        # Calculate total variance in residual space
+        total_variance = np.var(residual_subset, axis=0).sum()
+        
+        # Transform the subset using sparse PCA
+        transformed = self.sparse_pca.transform(residual_subset)
+        
+        # Calculate variance explained by each component
+        component_variances = []
+        for i in range(transformed.shape[1]):
+            # Project back to the original feature space
+            component_projection = np.outer(transformed[:, i], self.sparse_pca.components_[i])
+            component_var = np.var(component_projection, axis=0).sum()
+            component_variances.append(component_var)
+        
+        # Convert to explained variance ratio
+        explained_variance_ratio = np.array(component_variances) / total_variance
+        
+        return explained_variance_ratio
 
 # Helper function to get colors from viridis colormap
 def get_viridis_colors(n):
@@ -384,6 +482,7 @@ def get_viridis_colors(n):
     """
     return px.colors.sample_colorscale("viridis", np.linspace(0, 1, n))
 
+### PLOT PCA ###
 
 class TrajectoryPlotter:
     """
@@ -534,21 +633,21 @@ class TrajectoryPlotter:
         return fig
     
     def plot_multiple_pca_components_vs_step(self,
-                                           num_components: int = 4,
-                                           title: str = "PCA Components vs Training Steps",
-                                           width: int = 900,
-                                           height_per_component: int = 250,
-                                           show_legend: bool = True,
-                                           line_width: int = 2,
-                                           markers: bool = False,
-                                           marker_size: int = 6,
-                                           min_step=0,
-                                           shared_xaxis: bool = True):
+                                       title: str = "PCA Components vs Training Steps",
+                                       width: int = 900,
+                                       height_per_component: int = 250,
+                                       show_legend: bool = True,
+                                       line_width: int = 2,
+                                       markers: bool = False,
+                                       marker_size: int = 6,
+                                       min_step=0,
+                                       shared_xaxis: bool = False):
         """
-        Plot multiple PCA components against training steps as vertically stacked subplots.
+        Plot multiple PCA components and sparse PCA components against training steps as vertically stacked subplots.
         
         Args:
-            num_components (int): Number of components to plot (starting from PC1)
+            num_pca_components (int): Number of regular PCA components to plot (starting from PC1)
+            num_sparse_components (int): Number of sparse PCA components to plot (starting from SPC1)
             title (str): Overall plot title
             width (int): Plot width in pixels
             height_per_component (int): Height per component subplot in pixels
@@ -556,6 +655,7 @@ class TrajectoryPlotter:
             line_width (int): Width of trajectory lines
             markers (bool): Whether to show markers
             marker_size (int): Size of markers if shown
+            min_step: Minimum step to include in the plot
             shared_xaxis (bool): Whether to share x-axis across subplots
             
         Returns:
@@ -565,14 +665,33 @@ class TrajectoryPlotter:
         if self.pca_handler.pca is None:
             raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
             
-        # Limit number of components to what's available
-        available_components = self.pca_handler.pca.n_components_
-        num_components = min(num_components, available_components)
+        # Limit number of regular PCA components to what's available
+        num_pca_components = self.pca_handler.pca.n_components_
 
-        explained_var = self.pca_handler.pca.explained_variance_ratio_
-        pc_titles = [f"PC{i+1} ({explained_var[i]*100:.2f}%)" for i in range(num_components)]
+        # Get explained variance for regular PCA components
+        pca_explained_var = self.pca_handler.pca.explained_variance_ratio_
+        pc_titles = [f"PC{i+1} ({pca_explained_var[i]*100:.2f}%)" for i in range(num_pca_components)]
+        
+        # Handle sparse PCA components if available
+        if self.pca_handler.sparse_pca is not None:
+            num_sparse_components = self.pca_handler.sparse_pca.n_components_
+            
+            # Get sparsity for sparse components
+            if hasattr(self.pca_handler, 'get_sparse_component_sparsity'):
+                sparse_sparsity = self.pca_handler.get_sparse_component_sparsity()
+                spc_titles = [f"SPC{i+1} (Sparsity: {sparse_sparsity[i]*100:.2f}%)" for i in range(num_sparse_components)]
+            else:
+                # Fallback if sparsity info not available
+                spc_titles = [f"SPC{i+1}" for i in range(num_sparse_components)]
+        else:
+            num_sparse_components = 0
+            spc_titles = []
+        
+        # Calculate total number of components to plot
+        total_components = num_pca_components + num_sparse_components
+        subplot_titles = pc_titles + spc_titles
 
-        # subset steps by min_step
+        # Subset steps by min_step
         for model_size in self.model_order:
             transformed_key = f"{model_size}_transformed"
             if transformed_key not in self.pca_handler.trajectory_data:
@@ -582,22 +701,21 @@ class TrajectoryPlotter:
             self.pca_handler.trajectory_data[transformed_key] = df
         
         # Calculate total height
-        total_height = height_per_component * num_components
-        
-        # Create subplot layout
-        fig = go.Figure()
+        total_height = height_per_component * total_components
         
         # Create a subplot structure
+        fig = go.Figure()
+        
         fig = make_subplots(
-            rows=num_components,
+            rows=total_components,
             cols=1,
             shared_xaxes=shared_xaxis,
-            vertical_spacing=0.03,
-            subplot_titles=pc_titles
+            vertical_spacing=0.05,
+            subplot_titles=subplot_titles
         )
         
-        # Add traces for each component and model size
-        for pc_idx in range(num_components):
+        # Add traces for each regular PCA component and model size
+        for pc_idx in range(num_pca_components):
             pc = pc_idx + 1  # 1-based PC numbering
             col_pc = f"PC{pc}"
             
@@ -615,7 +733,7 @@ class TrajectoryPlotter:
                 
                 # Create hover text
                 hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_pc}: {val:.4f}" 
-                             for step, val in zip(df['step'], df[col_pc])]
+                            for step, val in zip(df['step'], df[col_pc])]
                 
                 # Add trace for this model and component
                 marker_dict = dict(size=marker_size) if markers else dict(size=0)
@@ -637,6 +755,48 @@ class TrajectoryPlotter:
                 )
                 fig.update_yaxes(title_text=f"PC{pc}", row=pc_idx+1, col=1)
         
+        # Add traces for each sparse PCA component and model size
+        for spc_idx in range(num_sparse_components):
+            spc = spc_idx + 1  # 1-based SPC numbering
+            col_spc = f"SPC{spc}"
+            plot_row = num_pca_components + spc_idx + 1  # Plot after regular PCs
+            
+            for model_size in self.model_order:
+                # Get transformed data
+                transformed_key = f"{model_size}_transformed"
+                if transformed_key not in self.pca_handler.trajectory_data:
+                    continue
+                    
+                df = self.pca_handler.trajectory_data[transformed_key]
+                
+                # Check if required columns exist
+                if col_spc not in df.columns or 'step' not in df.columns:
+                    continue
+                
+                # Create hover text
+                hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_spc}: {val:.4f}" 
+                            for step, val in zip(df['step'], df[col_spc])]
+                
+                # Add trace for this model and component
+                marker_dict = dict(size=marker_size) if markers else dict(size=0)
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=df['step'], 
+                        y=df[col_spc],
+                        mode='lines+markers' if markers else 'lines',
+                        name=f"Model {model_size}",
+                        line=dict(color=self.model_colors[model_size], width=line_width),
+                        marker=marker_dict,
+                        text=hover_text,
+                        hoverinfo='text',
+                        showlegend=False  # No need to show legend again for sparse components
+                    ),
+                    row=plot_row, 
+                    col=1
+                )
+                fig.update_yaxes(title_text=f"SPC{spc}", row=plot_row, col=1)
+        
         # Update layout
         fig.update_layout(
             title=title,
@@ -657,9 +817,9 @@ class TrajectoryPlotter:
 
         # Update x-axis titles (only for the bottom subplot if shared)
         if shared_xaxis:
-            fig.update_xaxes(title="Training Steps", row=num_components, col=1)
+            fig.update_xaxes(title="Training Steps", row=total_components, col=1)
         else:
-            for i in range(num_components):
+            for i in range(total_components):
                 fig.update_xaxes(title="Training Steps", row=i+1, col=1)
         
         # Add grid to all subplots
@@ -1349,38 +1509,397 @@ class TrajectoryPlotter:
         
         return fig
     
+### OTHER DATA STUFF ###
 
-def load_token_mapping(experiment_name, dataset_name):
+def save_pc_loadings_excel(pca_handler, filename, num_components=None, top_n=20, 
+                        include_sparse=True, token_mapping=None):
     """
-    Load token mapping from the tokens pickle file.
+    Save PC loadings to an Excel file with separate sheets for regular and sparse components.
     
     Args:
-        experiment_name (str): Name of the experiment (e.g., "EXP000")
-        dataset_name (str): Name of the dataset (e.g., "dm_mathematics")
-    
+        pca_handler: TrajectoryPCA instance with fitted PCA
+        filename (str): Output Excel file path
+        num_components (int, optional): Number of principal components to include
+        top_n (int): Number of top loading features per component
+        include_sparse (bool): Whether to include sparse components
+        token_mapping (dict, optional): Dictionary mapping column names to token values
+        
     Returns:
-        dict: Dictionary mapping context_id and token_position to actual token values
+        bool: Success status
     """
-    # Construct the path to the tokens pickle file
-    tokens_path = f"/Users/liam/quests/lsoc-psych/datasets/experiments/{experiment_name}/trajectories/tokens/{dataset_name}_tokens.pkl"
+
+    # Check if PCA has been fitted
+    if pca_handler.pca is None:
+        raise ValueError("PCA not fitted yet. Call fit_pca() first.")
     
-    # Load the pickle file
-    try:
-        with open(tokens_path, 'rb') as f:
-            token_data = pickle.load(f)
-    except Exception as e:
-        print(f"Error loading token file: {e}")
-        return None
+    # Create Excel writer
+    with pd.ExcelWriter(filename) as writer:
+        # Add summary sheet
+        summary_data = []
+        
+        # Regular PCA summary
+        explained_var = pca_handler.pca.explained_variance_ratio_
+        
+        if num_components is None:
+            num_pca_components = len(explained_var)
+        else:
+            num_pca_components = min(num_components, len(explained_var))
+            
+        for i in range(num_pca_components):
+            summary_data.append({
+                "Component": f"PC{i+1}",
+                "Type": "Regular",
+                "Explained Variance (%)": explained_var[i] * 100,
+                "Cumulative Variance (%)": np.sum(explained_var[:i+1]) * 100
+            })
+        
+        # Get feature names
+        feature_names = pca_handler.common_columns
+        
+        # Process regular PCA components
+        loadings = pca_handler.pca.components_
+        
+        all_pc_data = []
+        
+        # For each regular PCA component
+        for i in range(num_pca_components):
+            # Get the loadings for this component
+            component_loadings = loadings[i]
+            
+            # Create a DataFrame with feature names and their loadings
+            loadings_df = pd.DataFrame({
+                'Feature': feature_names,
+                'Loading': component_loadings
+            })
+            
+            # Sort by absolute loading value
+            loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
+            loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
+            
+            # Get top N features
+            top_loadings = loadings_df.head(top_n)[['Feature', 'Loading']].copy()
+            
+            # If token mapping provided, add token information
+            if token_mapping:
+                top_loadings['Token'] = top_loadings['Feature'].apply(
+                    lambda x: token_mapping.get(x, "N/A")
+                )
+            
+            # Add component information
+            top_loadings['Component'] = f"PC{i+1}"
+            top_loadings['Explained Variance (%)'] = explained_var[i] * 100
+            
+            all_pc_data.append(top_loadings)
+        
+        # Combine all PC data
+        if all_pc_data:
+            all_pc_df = pd.concat(all_pc_data, ignore_index=True)
+            all_pc_df.to_excel(writer, sheet_name='Regular PCs', index=False)
+        
+        # Process sparse PCA components if available
+        all_spc_data = []
+        
+        if pca_handler.sparse_pca is not None and include_sparse:
+            sparse_loadings = pca_handler.sparse_pca.components_
+            
+            # Get sparsity
+            sparse_sparsity = None
+            if hasattr(pca_handler, 'get_sparse_component_sparsity'):
+                sparse_sparsity = pca_handler.get_sparse_component_sparsity()
+            
+            # Get variance explained
+            sparse_variance = None
+            if hasattr(pca_handler, 'get_sparse_component_variance'):
+                sparse_variance = pca_handler.get_sparse_component_variance()
+            
+            num_sparse_components = min(num_components if num_components else float('inf'), 
+                                    sparse_loadings.shape[0])
+            
+            # Add to summary
+            for i in range(num_sparse_components):
+                summary_entry = {
+                    "Component": f"SPC{i+1}",
+                    "Type": "Sparse",
+                }
+                
+                if sparse_sparsity is not None:
+                    summary_entry["Sparsity (%)"] = sparse_sparsity[i] * 100
+                
+                if sparse_variance is not None and i < len(sparse_variance):
+                    summary_entry["Explained Variance of Residuals (%)"] = sparse_variance[i] * 100
+                
+                summary_data.append(summary_entry)
+            
+            # For each sparse component
+            for i in range(num_sparse_components):
+                component_loadings = sparse_loadings[i]
+                
+                # Calculate sparsity for this component
+                sparsity = 1.0 - (np.count_nonzero(component_loadings) / len(component_loadings))
+                
+                # Create DataFrame
+                loadings_df = pd.DataFrame({
+                    'Feature': feature_names,
+                    'Loading': component_loadings
+                })
+                
+                # Sort by absolute loading
+                loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
+                loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
+                
+                # Only include non-zero loadings
+                non_zero_mask = loadings_df['Loading'] != 0
+                non_zero_loadings = loadings_df[non_zero_mask]
+                
+                # Get top features
+                top_loadings = non_zero_loadings.head(top_n)[['Feature', 'Loading']].copy()
+                
+                # Add token information if available
+                if token_mapping:
+                    top_loadings['Token'] = top_loadings['Feature'].apply(
+                        lambda x: token_mapping.get(x, "N/A")
+                    )
+                
+                # Add component information
+                top_loadings['Component'] = f"SPC{i+1}"
+                top_loadings['Sparsity (%)'] = sparsity * 100
+                
+                if sparse_variance is not None and i < len(sparse_variance):
+                    top_loadings['Explained Variance of Residuals (%)'] = sparse_variance[i] * 100
+                
+                all_spc_data.append(top_loadings)
+            
+            # Combine all SPC data
+            if all_spc_data:
+                all_spc_df = pd.concat(all_spc_data, ignore_index=True)
+                all_spc_df.to_excel(writer, sheet_name='Sparse PCs', index=False)
+        
+        # Write summary sheet
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
     
-    # Create a lookup dictionary for token mapping
-    token_mapping = {}
+    print(f"PC loadings saved to {filename}")
+    return True
+
+
+def print_enhanced_pc_loadings(pca_handler, num_components=None, top_n=10,            
+                               include_sparse=True, 
+                                token_mapping=None, save_to_file=None, max_token_length=30):
+    """
+    Generate well-formatted tables showing the top loading columns for each principal component
+    with optional token information and explained variance.
     
-    # Process based on the structure of the token data
-    # This structure might need adjustment based on the actual format
-    for context_id, context_data in token_data.items():
-        for token_idx, token_value in enumerate(context_data):
-            # Create a key in format that matches your column names
-            key = f"context_{context_id}_pos_{token_idx}"
-            token_mapping[key] = token_value
+    Args:
+        pca_handler: TrajectoryPCA instance with fitted PCA
+        num_components (int, optional): Number of principal components to show (default: all)
+        top_n (int): Number of top loading features to show for each component
+        include_sparse (bool): Whether to include sparse components
+        token_mapping (dict, optional): Dictionary mapping column names to token values
+        save_to_file (str, optional): If provided, save output to this file path
+        max_token_length (int): Maximum length for token display
+        
+    Returns:
+        str: Formatted text output
+    """
     
-    return token_mapping
+    
+    # Check if PCA has been fitted
+    if pca_handler.pca is None:
+        raise ValueError("PCA not fitted yet. Call fit_pca() first.")
+    
+    # Get the feature names
+    feature_names = pca_handler.common_columns
+    
+    # String buffer to collect all output
+    output_buffer = StringIO()
+    
+    # Function to write to both buffer and print to console
+    def write_output(text):
+        print(text)
+        output_buffer.write(text + "\n")
+    
+    # Helper function to format token text
+    def format_token(token_text, max_length=max_token_length):
+        if token_text is None:
+            return "N/A"
+        # Replace newlines and tabs with visible representations
+        token_text = token_text.replace('\n', '\\n').replace('\t', '\\t')
+        # Truncate if too long
+        if len(token_text) > max_length:
+            return token_text[:max_length-3] + "..."
+        return token_text
+    
+    # Process regular PCA components
+    # Get the PCA components (loadings)
+    loadings = pca_handler.pca.components_
+    
+    # Get the explained variance ratio for each component
+    explained_var = pca_handler.pca.explained_variance_ratio_
+    
+    # Set number of components to display
+    if num_components is None:
+        num_pca_components = loadings.shape[0]
+    else:
+        num_pca_components = min(num_components, loadings.shape[0])
+    
+    # Header for regular PCA components
+    header = "=" * 100
+    write_output(header)
+    write_output(f"REGULAR PCA COMPONENTS (Top {top_n} Features per Component)")
+    write_output(header)
+    
+    # Print summary of explained variance
+    write_output("\nEXPLAINED VARIANCE SUMMARY:")
+    summary_data = []
+    for i in range(num_pca_components):
+        summary_data.append({
+            "Component": f"PC{i+1}",
+            "Explained Variance (%)": f"{explained_var[i]*100:.2f}%",
+            "Cumulative Variance (%)": f"{np.sum(explained_var[:i+1])*100:.2f}%"
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    # Format the summary table
+    write_output(summary_df.to_string(index=False))
+    write_output("\n" + "=" * 100 + "\n")
+    
+    # For each regular PCA component
+    for i in range(num_pca_components):
+        # Get the loadings for this component
+        component_loadings = loadings[i]
+        
+        # Create a DataFrame with feature names and their loadings
+        loadings_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Loading': component_loadings
+        })
+        
+        # Sort by absolute loading value (to get most influential features)
+        loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
+        loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
+        
+        # Get top N features
+        top_loadings = loadings_df.head(top_n)[['Feature', 'Loading']].reset_index(drop=True)
+        
+        # If token mapping provided, add token information
+        if token_mapping:
+            top_loadings['Token'] = top_loadings['Feature'].apply(
+                lambda x: format_token(token_mapping.get(x))
+            )
+        
+        # Component header
+        write_output(f"\nPRINCIPAL COMPONENT {i+1} ({explained_var[i]*100:.2f}% variance)")
+        write_output("-" * 100)
+        
+        # Print the formatted table
+        pd.set_option('display.max_colwidth', None)
+        pd.set_option('display.width', 100)
+        pd.set_option('display.float_format', '{:.4f}'.format)
+        
+        write_output(top_loadings.to_string(index=False))
+        write_output("\n")
+    
+    # Process sparse PCA components if they exist and requested
+    if pca_handler.sparse_pca is not None and include_sparse:
+        sparse_loadings = pca_handler.sparse_pca.components_
+        
+        # Get sparsity for sparse components
+        sparse_sparsity = None
+        if hasattr(pca_handler, 'get_sparse_component_sparsity'):
+            sparse_sparsity = pca_handler.get_sparse_component_sparsity()
+        
+        # Get variance explained by sparse components if available
+        sparse_variance = None
+        if hasattr(pca_handler, 'get_sparse_component_variance'):
+            try:
+                sparse_variance = pca_handler.get_sparse_component_variance()
+            except:
+                pass
+        
+        # Limit to specified number of components
+        num_sparse_components = min(num_components if num_components else float('inf'), 
+                                sparse_loadings.shape[0])
+        
+        # Header for sparse PCA components
+        write_output("=" * 100)
+        write_output(f"SPARSE PCA COMPONENTS FROM RESIDUALS (Top {top_n} Features per Component)")
+        write_output("=" * 100)
+        
+        # Print summary for sparse components
+        write_output("\nSPARSE COMPONENT SUMMARY:")
+        summary_data = []
+        for i in range(num_sparse_components):
+            summary_entry = {
+                "Component": f"SPC{i+1}",
+            }
+            
+            # Add sparsity if available
+            if sparse_sparsity is not None:
+                summary_entry["Sparsity (%)"] = f"{sparse_sparsity[i]*100:.2f}%"
+            
+            # Add variance if available
+            if sparse_variance is not None and i < len(sparse_variance):
+                summary_entry["Explained Variance of Residuals (%)"] = f"{sparse_variance[i]*100:.2f}%"
+            
+            summary_data.append(summary_entry)
+        
+        summary_df = pd.DataFrame(summary_data)
+        write_output(summary_df.to_string(index=False))
+        write_output("\n" + "=" * 100 + "\n")
+        
+        # For each sparse PCA component
+        for i in range(num_sparse_components):
+            # Get the loadings for this component
+            component_loadings = sparse_loadings[i]
+            
+            # Create a DataFrame with feature names and their loadings
+            loadings_df = pd.DataFrame({
+                'Feature': feature_names,
+                'Loading': component_loadings
+            })
+            
+            # Sort by absolute loading value (to get most influential features)
+            loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
+            loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
+            
+            # Get top N features with non-zero loadings
+            non_zero_mask = loadings_df['Loading'] != 0
+            non_zero_loadings = loadings_df[non_zero_mask]
+            top_loadings = non_zero_loadings.head(top_n)[['Feature', 'Loading']].reset_index(drop=True)
+            
+            # If token mapping provided, add token information
+            if token_mapping:
+                top_loadings['Token'] = top_loadings['Feature'].apply(
+                    lambda x: format_token(token_mapping.get(x))
+                )
+            
+            # Calculate sparsity
+            sparsity = 1.0 - (np.count_nonzero(component_loadings) / len(component_loadings))
+            
+            # Sparse component header
+            sparse_header = f"SPARSE PRINCIPAL COMPONENT {i+1} (Sparsity: {sparsity*100:.2f}%"
+            
+            # Add variance info if available
+            if sparse_variance is not None and i < len(sparse_variance):
+                sparse_header += f", Variance of Residuals: {sparse_variance[i]*100:.2f}%"
+            sparse_header += ")"
+            
+            write_output(sparse_header)
+            write_output("-" * 100)
+            
+            # Handle empty case
+            if len(top_loadings) == 0:
+                write_output("No non-zero loadings found in this component")
+            else:
+                write_output(top_loadings.to_string(index=False))
+            
+            write_output("\n")
+    
+    # Save to file if requested
+    if save_to_file:
+        with open(save_to_file, 'w') as f:
+            f.write(output_buffer.getvalue())
+        print(f"Output saved to {save_to_file}")
+    
+    # Return the full text
+    return output_buffer.getvalue()
