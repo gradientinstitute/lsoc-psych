@@ -86,6 +86,36 @@ def extract_tokens_from_checkpoint(pickle_file, selected_step):
     
     return dataset_tokens
 
+def create_dm_mathematics_tokens(step_file, output_path):
+    """
+    Create a new dm_mathematics_tokens.pkl file with the required format.
+    Each key is a context_idx, and each value is a dict with 'tokens' and 'category'.
+    """
+    # Load step file to get tokens and category information
+    with open(step_file, 'rb') as f:
+        step_data = pickle.load(f)
+    
+    # Create the formatted dictionary
+    formatted_dict = {}
+    
+    if 'dm_mathematics' in step_data:
+        for item in step_data['dm_mathematics']:
+            context_idx = item['context_idx']
+            tokens = item['tokens']
+            category = item['category']
+            
+            # Store in the required format
+            formatted_dict[context_idx] = {
+                'tokens': tokens,
+                'category': category
+            }
+    
+    # Save the formatted dictionary
+    with open(output_path, 'wb') as f:
+        pickle.dump(formatted_dict, f)
+    
+    print(f"Saved tokens for dm_mathematics to {output_path}")  
+
 def main():
     # Create output directory for CSVs and tokens
     exp_name = "EXP000"
@@ -135,11 +165,17 @@ def main():
                 if dataset_tokens:
                     # Save tokens for each dataset
                     for dataset_name, tokens_dict in dataset_tokens.items():
-                        tokens_output_path = os.path.join(tokens_dir, f"{dataset_name}_tokens.pkl")
-                        with open(tokens_output_path, 'wb') as f:
-                            pickle.dump(tokens_dict, f)
-                        print(f"Saved tokens for {dataset_name} to {tokens_output_path}")
-                    
+                        if dataset_name == 'dm_mathematics':
+                            # Create a new dm_mathematics_tokens.pkl file
+                            dm_math_tokens_output_path = os.path.join(tokens_dir, "dm_mathematics_tokens.pkl")
+                            create_dm_mathematics_tokens(pickle_file, dm_math_tokens_output_path)
+                            continue
+                        else:
+                            tokens_output_path = os.path.join(tokens_dir, f"{dataset_name}_tokens.pkl")
+                            with open(tokens_output_path, 'wb') as f:
+                                pickle.dump(tokens_dict, f)
+                            print(f"Saved tokens for {dataset_name} to {tokens_output_path}")
+                        
                     # Set flag to avoid extracting tokens again
                     tokens_extracted = True
             

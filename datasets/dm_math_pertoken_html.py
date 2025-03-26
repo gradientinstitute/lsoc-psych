@@ -6,6 +6,7 @@ import glob
 import re
 from IPython.display import HTML, display
 import csv
+import json
 
 def get_context_preview(tokens, max_words=3):
     """
@@ -42,6 +43,8 @@ def load_token_data(tokens_dir, dataset_name):
     Returns:
         Dictionary of token data by context ID
     """
+    dataset_name="dm_mathematics"
+
     token_file = os.path.join(tokens_dir, f"{dataset_name}_tokens.pkl")
     
     if not os.path.exists(token_file):
@@ -193,12 +196,12 @@ def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None
     
     return results
 
-def create_pertoken_html(all_models_results, selected_steps=None, model_name="", dataset_name=""):
+def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_name="", dataset_name="dm_mathematics"):
     """
-    Create HTML for per-token loss visualization with interactive controls.
+    Create HTML for per-token loss visualization with interactive controls for dm_mathematics.
     
     Args:
-        results: Dictionary with context and loss data
+        all_models_results: Dictionary with model sizes containing zero-shot and few-shot data
         selected_steps: List of steps to display initially (or None for all)
         model_name: Name of the model being visualized
         dataset_name: Name of the dataset being visualized
@@ -213,12 +216,20 @@ def create_pertoken_html(all_models_results, selected_steps=None, model_name="",
     
     # Default to the first model size in the list
     default_model_size = model_sizes[0]
-    results = all_models_results[default_model_size]
-
+    
+    # Get both types of results
+    zero_shot_results = all_models_results[default_model_size]["zero_shot"]
+    few_shot_results = all_models_results[default_model_size]["few_shot"]
+    
+    # Use whichever has data
+    results = zero_shot_results if zero_shot_results else few_shot_results
+    if not results:
+        return "<div>Error: No data available for the selected model</div>"
+    
     # Get all context indices
     context_indices = sorted(list(results.keys()), key=int)
     
-    # IMPORTANT CHANGE: Get only the steps that are actually in our data
+    # Get available steps
     available_steps = []
     if context_indices:
         # Collect all unique steps from all contexts
@@ -244,23 +255,36 @@ def create_pertoken_html(all_models_results, selected_steps=None, model_name="",
     # Get the first context as default
     default_context = context_indices[0] if context_indices else ""
     
-    # Calculate universal max loss values per context
+    # Calculate universal max loss values per context (for both zero and few shot)
     universal_max_losses = {}
     for context_id in context_indices:
         max_loss = 0
-        # Check each model size for this context
+        # Check across all model sizes
         for model_size in model_sizes:
             model_results = all_models_results[model_size]
-            if context_id in model_results:
-                context_data = model_results[context_id]
-                # Check each step
+            
+            # Check zero-shot data
+            if context_id in model_results["zero_shot"]:
+                zero_shot_data = model_results["zero_shot"][context_id]
                 for step in available_steps:
-                    if step in context_data["checkpoints"]:
-                        losses = context_data["checkpoints"][step]["losses"]
+                    if step in zero_shot_data["checkpoints"]:
+                        losses = zero_shot_data["checkpoints"][step]["losses"]
                         if losses:
                             valid_losses = [loss for loss in losses if loss is not None]
                             if valid_losses:
                                 max_loss = max(max_loss, max(valid_losses))
+            
+            # Check few-shot data
+            if context_id in model_results["few_shot"]:
+                few_shot_data = model_results["few_shot"][context_id]
+                for step in available_steps:
+                    if step in few_shot_data["checkpoints"]:
+                        losses = few_shot_data["checkpoints"][step]["losses"]
+                        if losses:
+                            valid_losses = [loss for loss in losses if loss is not None]
+                            if valid_losses:
+                                max_loss = max(max_loss, max(valid_losses))
+                                
         universal_max_losses[context_id] = max_loss
     
     # Initialize the HTML with styling and script
@@ -274,7 +298,7 @@ def create_pertoken_html(all_models_results, selected_steps=None, model_name="",
         elif model_name:
             title_text = model_name
         else:
-            title_text = f"Pythia suite pertoken loss on pile_subsets_mini - {dataset_name}"
+            title_text = dataset_name
         
         html += f"""
         <div style="text-align: center; margin: 20px 0; padding: 10px; background-color: #2c3e50; color: white; font-size: 24px; font-weight: bold; border-radius: 5px;">
@@ -282,26 +306,29 @@ def create_pertoken_html(all_models_results, selected_steps=None, model_name="",
         </div>
         """
     
-    # IMPORTANT CHANGE: Pass only the available_steps (which now equals our filtered subset)
-    # instead of all_steps to the controls
-    html += create_controls_html(available_steps, selected_steps, categories, model_sizes, default_model_size)
+    # Add controls with prompting strategy options
+    html += create_dm_math_controls_html(available_steps, selected_steps, categories, model_sizes, default_model_size)
     
     # Create container for visualization
     html += '<div id="visualization-container">'
     
-    # Add initial context view (first context)
+    # Add initial context view (first context with zero-shot data)
     if default_context:
         # Pass the universal max loss for this context
         max_loss = universal_max_losses.get(default_context, 0)
-        html += create_single_context_raw_html(results, default_context, selected_steps, max_loss)
+        if zero_shot_results and default_context in zero_shot_results:
+            html += create_single_context_raw_html(zero_shot_results, default_context, selected_steps, max_loss)
+        elif few_shot_results and default_context in few_shot_results:
+            html += create_single_context_raw_html(few_shot_results, default_context, selected_steps, max_loss)
+        else:
+            html += '<div style="text-align: center; padding: 20px; color: #666; font-size: 16px;">No data available for this context.</div>'
     else:
         html += '<div style="text-align: center; padding: 20px; color: #666; font-size: 16px;">No contexts available.</div>'
     
     html += '</div>'
     
     # Add JavaScript for toggling between views and handling selections
-    # Pass the universal max losses to the script
-    html += create_toggle_script(all_models_results, context_indices, default_context, default_model_size, universal_max_losses)
+    html += create_dm_math_toggle_script(all_models_results, context_indices, default_context, default_model_size, universal_max_losses)
     
     return html
 
@@ -727,14 +754,38 @@ def create_html_styles():
             color: white;
             border-color: #2c3e50;
         }
+        .prompting-selector {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin: 15px 0;
+            width: 100%;
+            max-width: 800px;
+        }
+        
+        .prompting-selector-title {
+            font-weight: bold;
+            font-size: 16px;
+            color: black;
+        }
+        
+        .prompting-toggle-group {
+            display: inline-flex;
+            gap: 20px;
+            background-color: #f5f5f5;
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
     </style>
     """
 
-def create_controls_html(all_steps, selected_steps, categories, model_sizes, default_model_size):
+def create_dm_math_controls_html(all_steps, selected_steps, categories, model_sizes, default_model_size):
     """
-    Create HTML for step selection and visualization toggle controls.
+    Create HTML for controls with prompting strategy toggle.
     """
-    # Start with completely separate containers
+    # Start with scrolling controls
     html = '''
     <!-- Regular scrolling controls -->
     <div class="scrolling-controls">
@@ -745,7 +796,7 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
 
     # Add a checkbox for each step
     for step in all_steps:
-        checked = "checked" if step in selected_steps else ""
+        checked = "checked" if selected_steps is None or step in selected_steps else ""
         html += f'''
         <label class="step-checkbox-label">
             <input type="checkbox" class="step-checkbox" value="{step}" {checked}>
@@ -784,7 +835,7 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
         </div>
     </div>
 
-    <!-- Separate sticky controls - now only contains view toggle and model selection -->
+    <!-- Separate sticky controls - now contains view toggle, prompting strategy and model selection -->
     <div class="sticky-controls">
         <!-- Primary view toggle -->
         <div class="toggle-group">
@@ -797,9 +848,28 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
                 Step-by-Step Differences
             </label>
             <label class="toggle-label">
+                <input type="radio" name="viewToggle" value="promptdiff" onchange="toggleView('promptdiff')">
+                Zero vs Few Shot Differences
+            </label>
+            <label class="toggle-label">
                 <input type="radio" name="viewToggle" value="modeldiff" onchange="toggleView('modeldiff')">
                 Model Size Differences
             </label>
+        </div>
+
+        <!-- Prompting strategy toggle -->
+        <div id="prompting-selector" class="prompting-selector">
+            <div class="prompting-selector-title">Select Prompting Strategy:</div>
+            <div class="prompting-toggle-group">
+                <label class="toggle-label">
+                    <input type="radio" name="promptingToggle" value="zero_shot" onchange="updatePromptingStrategy()" checked>
+                    Zero-Shot
+                </label>
+                <label class="toggle-label">
+                    <input type="radio" name="promptingToggle" value="few_shot" onchange="updatePromptingStrategy()">
+                    Few-Shot
+                </label>
+            </div>
         </div>
 
         <div id="model-selector" class="model-selector">
@@ -832,20 +902,9 @@ def create_controls_html(all_steps, selected_steps, categories, model_sizes, def
 
     return html
 
-def create_toggle_script(all_models_results, context_indices, 
-                         default_context, default_model_size,
-                         universal_max_losses=None):
+def create_dm_math_toggle_script(all_models_results, context_indices, default_context, default_model_size, universal_max_losses=None):
     """
-    Create JavaScript for toggle functionality and selection.
-    
-    Args:
-        all_models_results: Dictionary with token loss results for each model size
-        context_indices: List of context indices
-        default_context: Default context to show initially
-        default_model_size: Default model size to show initially
-        
-    Returns:
-        JavaScript code as a string
+    Create JavaScript for toggle functionality and selection with prompting strategy support.
     """
     # Serialize the full results data for JavaScript
     import json
@@ -853,12 +912,26 @@ def create_toggle_script(all_models_results, context_indices,
     # Optimize the JSON serialization
     optimized_results = {}
     
-    for model_size, results in all_models_results.items():
-        optimized_results[model_size] = {}
+    for model_size, model_data in all_models_results.items():
+        optimized_results[model_size] = {"zero_shot": {}, "few_shot": {}}
+        
+        # Process zero-shot data
+        zero_shot_data = model_data.get("zero_shot", {})
         for context_id in context_indices:
-            if context_id in results:
-                context_data = results[context_id]
-                optimized_results[model_size][context_id] = {
+            if context_id in zero_shot_data:
+                context_data = zero_shot_data[context_id]
+                optimized_results[model_size]["zero_shot"][context_id] = {
+                    "tokens": context_data["tokens"],
+                    "preview": context_data.get("preview", ""),
+                    "checkpoints": context_data["checkpoints"]
+                }
+        
+        # Process few-shot data
+        few_shot_data = model_data.get("few_shot", {})
+        for context_id in context_indices:
+            if context_id in few_shot_data:
+                context_data = few_shot_data[context_id]
+                optimized_results[model_size]["few_shot"][context_id] = {
                     "tokens": context_data["tokens"],
                     "preview": context_data.get("preview", ""),
                     "checkpoints": context_data["checkpoints"]
@@ -872,6 +945,7 @@ def create_toggle_script(all_models_results, context_indices,
     # Use the optimized results for serialization
     results_json = json.dumps(optimized_results)
 
+
     return f"""
     <script>
         // Store the full results data for dynamic processing
@@ -881,7 +955,20 @@ def create_toggle_script(all_models_results, context_indices,
         let currentView = 'raw';
         let currentContext = "{default_context}";
         let currentModelSize = "{default_model_size}";
+        let currentPromptingStrategy = "zero_shot";
         let diffMode = 'absolute'; 
+        
+        // Update prompting strategy when radio buttons change
+        function updatePromptingStrategy() {{
+            const promptingRadios = document.getElementsByName('promptingToggle');
+            for (const radio of promptingRadios) {{
+                if (radio.checked) {{
+                    currentPromptingStrategy = radio.value;
+                    break;
+                }}
+            }}
+            updateVisualization();
+        }}
         
         // Update model size when dropdown changes
         function updateModelSize() {{
@@ -912,7 +999,7 @@ def create_toggle_script(all_models_results, context_indices,
             try {{
                 // Parse input string to get interval ranges
                 // First replace all spaces for consistent parsing
-                const cleanedInput = intervalsInput.replace(/\s+/g, '');
+                const cleanedInput = intervalsInput.replace(/\\s+/g, '');
                 
                 // Split by "],["
                 const intervalStrings = cleanedInput.split('],[');
@@ -925,10 +1012,10 @@ def create_toggle_script(all_models_results, context_indices,
                     
                     // Clean up brackets for first and last intervals
                     if (i === 0) {{
-                        intervalStr = intervalStr.replace(/^\[/, '');
+                        intervalStr = intervalStr.replace(/^\\[/, '');
                     }}
                     if (i === intervalStrings.length - 1) {{
-                        intervalStr = intervalStr.replace(/\]$/, '');
+                        intervalStr = intervalStr.replace(/\\]$/, '');
                     }}
                     
                     // Split by comma
@@ -978,107 +1065,135 @@ def create_toggle_script(all_models_results, context_indices,
             }}
         }}
         
-        // Toggle between raw and diff views
-        // Replace the existing toggleView function with this updated version:
+        // Toggle between view types
         function toggleView(viewType) {{
             currentView = viewType;
             
-            // Show/hide model comparison dropdowns based on view type
+            // Show/hide UI elements based on view type
             const modelSelectorContainer = document.getElementById('model-selector');
             const modelComparisonContainer = document.getElementById('model-comparison-container');
+            const promptingSelectorContainer = document.getElementById('prompting-selector');
             
-            if (viewType === 'modeldiff') {{
-            // For model diff view, hide single model selector and show comparison dropdowns
+            // Reset display for all containers
             if (modelSelectorContainer) {{
-                modelSelectorContainer.style.display = 'none';
+                modelSelectorContainer.style.display = 'flex';
             }}
-            
-            const modelComparisonContainer = document.getElementById('model-comparison-container');
-            
+            if (promptingSelectorContainer) {{
+                promptingSelectorContainer.style.display = 'flex';
+            }}
             if (modelComparisonContainer) {{
-                modelComparisonContainer.style.display = 'flex';
-
-                // Modify this section to include the labels
-                const modelComparisonSelectors = document.querySelector('.model-comparison-selectors');
-                if (modelComparisonSelectors) {{
-                    modelComparisonSelectors.innerHTML = `
-                        <div class="dropdown-with-label">
-                            <span class="model-label"><b>(A)</b></span>
-                            <select id="model-base-dropdown" class="model-dropdown"></select>
-                        </div>
-                        <span class="comparison-vs">vs</span>
-                        <div class="dropdown-with-label">
-                            <span class="model-label"><b>(B)</b></span>
-                            <select id="model-compare-dropdown" class="model-dropdown"></select>
-                        </div>
-                    `;
-                }}
-                            
-                // Populate the model comparison dropdowns
-                const baseDropdown = document.getElementById('model-base-dropdown');
-                const compareDropdown = document.getElementById('model-compare-dropdown');
-                
-                if (baseDropdown && compareDropdown) {{
-                    baseDropdown.onchange = updateBaseModel;
-                    compareDropdown.onchange = updateCompareModel;
-                    // Clear existing options
-                    baseDropdown.innerHTML = '';
-                    compareDropdown.innerHTML = '';
-                    
-                    // Add options for all model sizes
-                    const modelSizes = Object.keys(fullModelResults);
-                    
-                    modelSizes.forEach((size, index) => {{
-                        const baseOption = document.createElement('option');
-                        baseOption.value = size;
-                        baseOption.textContent = `Model Size: ${{size}}`;
-                        
-                        const compareOption = document.createElement('option');
-                        compareOption.value = size;
-                        compareOption.textContent = `Model Size: ${{size}}`;
-                        
-                        baseDropdown.appendChild(baseOption);
-                        compareDropdown.appendChild(compareOption);
-                        
-                        // Select different models by default if possible
-                        if (index === 0) {{
-                            baseOption.selected = true;
-                        }}
-                        if (index === Math.min(1, modelSizes.length - 1)) {{
-                            compareOption.selected = true;
-                        }}
-                    }});
-                }}
-                
-                // Check if buttons already exist to avoid duplicates
-                if (!document.getElementById('diff-mode-buttons')) {{
-                    const diffModeButtons = document.createElement('div');
-                    diffModeButtons.id = 'diff-mode-buttons';
-                    diffModeButtons.className = 'diff-mode-buttons';
-                    diffModeButtons.innerHTML = `
-                        <div class="model-selector-title" style="margin-top: 10px;">Difference Mode:</div>
-                        <div class="diff-mode-toggle">
-                            <button id="absolute-diff-btn" class="diff-mode-button diff-mode-active" onclick="setDiffMode('absolute')">
-                                Absolute (B-A)
-                            </button>
-                            <button id="relative-diff-btn" class="diff-mode-button" onclick="setDiffMode('relative')">
-                                Relative (B/A)
-                            </button>
-                        </div>
-                    `;
-                    modelComparisonContainer.appendChild(diffModeButtons);
-                }}
+                modelComparisonContainer.style.display = 'none';
             }}
-        }} else {{
-                // For raw or step diff view, show single model selector and hide comparison dropdowns
+            
+            // Handle view-specific UI changes
+            if (viewType === 'modeldiff') {{
+                // Model diff - show comparison dropdowns, hide single model selector
                 if (modelSelectorContainer) {{
-                    modelSelectorContainer.style.display = 'flex';
+                    modelSelectorContainer.style.display = 'none';
                 }}
                 if (modelComparisonContainer) {{
-                    modelComparisonContainer.style.display = 'none';
+                    modelComparisonContainer.style.display = 'flex';
+                    
+                    // Set up model comparison dropdowns
+                    const modelComparisonSelectors = document.querySelector('.model-comparison-selectors');
+                    if (modelComparisonSelectors) {{
+                        modelComparisonSelectors.innerHTML = `
+                            <div class="dropdown-with-label">
+                                <span class="model-label"><b>(A)</b></span>
+                                <select id="model-base-dropdown" class="model-dropdown"></select>
+                            </div>
+                            <span class="comparison-vs">vs</span>
+                            <div class="dropdown-with-label">
+                                <span class="model-label"><b>(B)</b></span>
+                                <select id="model-compare-dropdown" class="model-dropdown"></select>
+                            </div>
+                        `;
+                    }}
+                    
+                    // Populate the model comparison dropdowns
+                    const baseDropdown = document.getElementById('model-base-dropdown');
+                    const compareDropdown = document.getElementById('model-compare-dropdown');
+                    
+                    if (baseDropdown && compareDropdown) {{
+                        baseDropdown.onchange = updateBaseModel;
+                        compareDropdown.onchange = updateCompareModel;
+                        // Clear existing options
+                        baseDropdown.innerHTML = '';
+                        compareDropdown.innerHTML = '';
+                        
+                        // Add options for all model sizes
+                        const modelSizes = Object.keys(fullModelResults);
+                        
+                        modelSizes.forEach((size, index) => {{
+                            const baseOption = document.createElement('option');
+                            baseOption.value = size;
+                            baseOption.textContent = `Model Size: ${{size}}`;
+                            
+                            const compareOption = document.createElement('option');
+                            compareOption.value = size;
+                            compareOption.textContent = `Model Size: ${{size}}`;
+                            
+                            baseDropdown.appendChild(baseOption);
+                            compareDropdown.appendChild(compareOption);
+                            
+                            // Select different models by default if possible
+                            if (index === 0) {{
+                                baseOption.selected = true;
+                            }}
+                            if (index === Math.min(1, modelSizes.length - 1)) {{
+                                compareOption.selected = true;
+                            }}
+                        }});
+                    }}
+                    
+                    // Add diff mode buttons
+                    if (!document.getElementById('diff-mode-buttons')) {{
+                        const diffModeButtons = document.createElement('div');
+                        diffModeButtons.id = 'diff-mode-buttons';
+                        diffModeButtons.className = 'diff-mode-buttons';
+                        diffModeButtons.innerHTML = `
+                            <div class="model-selector-title" style="margin-top: 10px;">Difference Mode:</div>
+                            <div class="diff-mode-toggle">
+                                <button id="absolute-diff-btn" class="diff-mode-button diff-mode-active" onclick="setDiffMode('absolute')">
+                                    Absolute (B-A)
+                                </button>
+                                <button id="relative-diff-btn" class="diff-mode-button" onclick="setDiffMode('relative')">
+                                    Relative (B/A)
+                                </button>
+                            </div>
+                        `;
+                        modelComparisonContainer.appendChild(diffModeButtons);
+                    }}
+                }}
+            }} else if (viewType === 'promptdiff') {{
+                // For prompting diff, hide prompting strategy selector
+                if (promptingSelectorContainer) {{
+                    promptingSelectorContainer.style.display = 'none';
                 }}
             }}
             
+            updateVisualization();
+        }}
+        
+        // Set the difference mode for model comparisons
+        function setDiffMode(mode) {{
+            diffMode = mode;
+            
+            // Update button states
+            const absoluteBtn = document.getElementById('absolute-diff-btn');
+            const relativeBtn = document.getElementById('relative-diff-btn');
+            
+            if (absoluteBtn && relativeBtn) {{
+                if (mode === 'absolute') {{
+                    absoluteBtn.classList.add('diff-mode-active');
+                    relativeBtn.classList.remove('diff-mode-active');
+                }} else {{
+                    absoluteBtn.classList.remove('diff-mode-active');
+                    relativeBtn.classList.add('diff-mode-active');
+                }}
+            }}
+            
+            // Update the visualization
             updateVisualization();
         }}
         
@@ -1109,30 +1224,8 @@ def create_toggle_script(all_models_results, context_indices,
             currentContext = dropdown.value;
             updateVisualization();
         }}
-
-        // Add this new function to set the difference mode
-        function setDiffMode(mode) {{
-            diffMode = mode;
-            
-            // Update button states
-            const absoluteBtn = document.getElementById('absolute-diff-btn');
-            const relativeBtn = document.getElementById('relative-diff-btn');
-            
-            if (absoluteBtn && relativeBtn) {{
-                if (mode === 'absolute') {{
-                    absoluteBtn.classList.add('diff-mode-active');
-                    relativeBtn.classList.remove('diff-mode-active');
-                }} else {{
-                    absoluteBtn.classList.remove('diff-mode-active');
-                    relativeBtn.classList.add('diff-mode-active');
-                }}
-            }}
-            
-            // Update the visualization
-            updateVisualization();
-        }}
         
-        // Replace the existing updateVisualization function with this updated version
+        // Update the visualization based on current selections
         function updateVisualization() {{
             const container = document.getElementById('visualization-container');
             const selectedSteps = getSelectedSteps();
@@ -1154,86 +1247,43 @@ def create_toggle_script(all_models_results, context_indices,
                 const baseModelResults = fullModelResults[baseModelSize] || {{}};
                 const compareModelResults = fullModelResults[compareModelSize] || {{}};
                 
-                html = createModelDiffHtml(baseModelResults, compareModelResults, currentContext, selectedSteps);
-            }} else {{
-                // For raw or step-diff views, use the single selected model
+                // Use the current prompting strategy
+                const baseResults = baseModelResults[currentPromptingStrategy] || {{}};
+                const compareResults = compareModelResults[currentPromptingStrategy] || {{}};
+                
+                html = createModelDiffHtml(baseResults, compareResults, currentContext, selectedSteps, 
+                                          baseModelSize, compareModelSize, currentPromptingStrategy);
+            }}
+            else if (currentView === 'promptdiff') {{
+                // For prompting diff view, compare zero-shot and few-shot for the current model
                 const modelResults = fullModelResults[currentModelSize] || {{}};
+                const zeroShotResults = modelResults["zero_shot"] || {{}};
+                const fewShotResults = modelResults["few_shot"] || {{}};
+                
+                html = createPromptingDiffHtml(zeroShotResults, fewShotResults, currentContext, selectedSteps);
+            }}
+            else {{
+                // For raw or step-diff views, use the single selected model and prompting strategy
+                const modelResults = fullModelResults[currentModelSize] || {{}};
+                const results = modelResults[currentPromptingStrategy] || {{}};
                 
                 if (currentView === 'raw') {{
-                    html = createSingleContextRawHtml(modelResults, currentContext, selectedSteps);
+                    html = createSingleContextRawHtml(results, currentContext, selectedSteps);
                 }} else {{
-                    html = createSingleContextStepDiffHtml(modelResults, currentContext, selectedSteps);
+                    html = createSingleContextStepDiffHtml(results, currentContext, selectedSteps);
                 }}
             }}
             
             container.innerHTML = html;
         }}
 
-        // Initialize the visualization when the page loads
-        document.addEventListener('DOMContentLoaded', function() {{
-            // Set default context and model
-            const contextDropdown = document.getElementById('context-dropdown');
-            if (contextDropdown) {{
-                contextDropdown.value = currentContext;
-            }}
-            
-            const modelDropdown = document.getElementById('model-dropdown');
-            if (modelDropdown) {{
-                modelDropdown.value = currentModelSize;
-            }}
-
-            const baseModelDropdown = document.getElementById('model-base-dropdown');
-            if (baseModelDropdown) {{
-                baseModelDropdown.addEventListener('change', updateBaseModel);
-            }}
-            
-            const compareModelDropdown = document.getElementById('model-compare-dropdown');
-            if (compareModelDropdown) {{
-                compareModelDropdown.addEventListener('change', updateCompareModel);
-            }}
-            
-            // Select evenly spaced steps (maximum 15)
-            const allCheckboxes = document.querySelectorAll('.step-checkbox');
-            const allSteps = Array.from(allCheckboxes);
-            
-            // First uncheck all steps
-            allSteps.forEach(cb => cb.checked = false);
-            
-            // If we have more than 15 steps, select evenly spaced ones
-            if (allSteps.length > 15) {{
-                // Calculate the step size to get approximately 15 evenly spaced steps
-                const stepSize = Math.max(1, Math.floor(allSteps.length / 15));
-                
-                // Select every nth step
-                for (let i = 0; i < allSteps.length; i += stepSize) {{
-                    if (allSteps[i]) {{
-                        allSteps[i].checked = true;
-                    }}
-                }}
-                
-                // Ensure we always include the first and last step for better context
-                if (allSteps[0]) {{
-                    allSteps[0].checked = true;
-                }}
-                if (allSteps[allSteps.length - 1]) {{
-                    allSteps[allSteps.length - 1].checked = true;
-                }}
-            }} else {{
-                // If we have 15 or fewer steps, select all of them
-                allSteps.forEach(cb => cb.checked = true);
-            }}
-            
-            // Update the visualization with the evenly spaced steps
-            updateVisualization();
-        }});
-        
         // Create HTML for a single context with raw losses
         function createSingleContextRawHtml(results, contextId, selectedSteps) {{
             // Get data for the context
             const contextData = results[contextId];
             if (!contextData) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context not available for this model size</div>
+                    <div class="context-title">Context not available for this model size and prompting strategy</div>
                 </div>`;
             }}
             
@@ -1247,23 +1297,11 @@ def create_toggle_script(all_models_results, context_indices,
             
             // Find max loss for normalization
             let maxLoss = Math.min(universalMaxLosses[contextId] || 0, 15);
-            /*
-            let maxLoss = 0;
-            for (const step of steps) {{
-                const losses = contextData["checkpoints"][step]["losses"];
-                if (losses) {{
-                    const validLosses = losses.filter(loss => loss !== null);
-                    if (validLosses.length > 0) {{
-                        maxLoss = Math.max(maxLoss, ...validLosses);
-                    }}
-                }}
-            }}
-            */
             
             // Start building HTML
             let html = `
                 <div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Raw Loss)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Raw Loss - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div class="legend-container">
                         <div class="legend-item">
                             <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
@@ -1294,7 +1332,6 @@ def create_toggle_script(all_models_results, context_indices,
             // Create the wrapped token grid
             html += `<div class="token-grid-wrapper"><div class="token-grid">`;
             
-            // Process tokens in chunks
             // Process tokens in chunks
             for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {{
                 const startIdx = chunkIdx * tokensPerRow;
@@ -1402,7 +1439,7 @@ def create_toggle_script(all_models_results, context_indices,
             const contextData = results[contextId];
             if (!contextData) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context not available for this model size</div>
+                    <div class="context-title">Context not available for this model size and prompting strategy</div>
                 </div>`;
             }}
             
@@ -1417,7 +1454,7 @@ def create_toggle_script(all_models_results, context_indices,
             // If no steps or only one step, can't show differences
             if (steps.length < 2) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div>At least two steps must be selected to show differences.</div>
                 </div>`;
             }}
@@ -1428,7 +1465,7 @@ def create_toggle_script(all_models_results, context_indices,
             // Start building HTML
             let html = `
                 <div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div class="legend-container">
                         <div class="legend-item">
                             <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
@@ -1669,25 +1706,22 @@ def create_toggle_script(all_models_results, context_indices,
             return html;
         }}
 
-        // Add this new function to create the model diff visualization
-        function createModelDiffHtml(baseModelResults, compareModelResults, contextId, selectedSteps) {{
+        // Create HTML for model size difference visualization
+        function createModelDiffHtml(baseResults, compareResults, contextId, selectedSteps, 
+                                   baseModelSize, compareModelSize, promptingStrategy) {{
             // Get data for the context from both models
-            const baseContextData = baseModelResults[contextId];
-            const compareContextData = compareModelResults[contextId];
+            const baseContextData = baseResults[contextId];
+            const compareContextData = compareResults[contextId];
             
             // Check if context exists in both models
             if (!baseContextData || !compareContextData) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context data not available for both models</div>
+                    <div class="context-title">Context data not available for both models with the selected prompting strategy</div>
                 </div>`;
             }}
             
             const tokens = baseContextData["tokens"]; // Use tokens from base model
             const preview = baseContextData["preview"] || "";
-            
-            // Get the first model size for display
-            const baseModelSize = document.getElementById('model-base-dropdown').value;
-            const compareModelSize = document.getElementById('model-compare-dropdown').value;
             
             // Ensure steps are filtered and exist in both model datasets
             const steps = selectedSteps
@@ -1715,12 +1749,12 @@ def create_toggle_script(all_models_results, context_indices,
                 maxDiff = 1.0;  // Fixed max diff for relative scale: [-100%, 100%]
             }}
             
-            // Update the title text based on the difference mode
+            // Update the title text based on the difference mode and prompting strategy
             let titleText = '';
             if (diffMode === 'absolute') {{
-                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} - ${{baseModelSize}})`;
+                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} - ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
             }} else {{
-                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} / ${{baseModelSize}})`;
+                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} / ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
             }}
             
             // Start building HTML
@@ -1902,15 +1936,258 @@ def create_toggle_script(all_models_results, context_indices,
             return html;
         }}
         
-        // Initialize the visualization when the page loads
-        document.addEventListener('DOMContentLoaded', function() {{
-            // Set default context
-            const dropdown = document.getElementById('context-dropdown');
-            if (dropdown) {{
-                dropdown.value = currentContext;
+        // Create HTML for prompting strategy comparison (zero-shot vs few-shot)
+        function createPromptingDiffHtml(zeroShotResults, fewShotResults, contextId, selectedSteps) {{
+            // Get data for the context from both strategies
+            const zeroShotContextData = zeroShotResults[contextId];
+            const fewShotContextData = fewShotResults[contextId];
+            
+            // Check if context exists in both strategies
+            if (!zeroShotContextData || !fewShotContextData) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context data not available for both prompting strategies</div>
+                </div>`;
             }}
             
-            // Update the visualization with the default view
+            // Prefer zero-shot tokens for consistency
+            const tokens = zeroShotContextData["tokens"]; 
+            const preview = zeroShotContextData["preview"] || "";
+            
+            // Ensure steps are filtered and exist in both datasets
+            const steps = selectedSteps
+                .filter(step => 
+                    zeroShotContextData["checkpoints"][step] && 
+                    zeroShotContextData["checkpoints"][step]["losses"] &&
+                    fewShotContextData["checkpoints"][step] && 
+                    fewShotContextData["checkpoints"][step]["losses"]
+                )
+                .sort((a, b) => parseInt(a) - parseInt(b));
+            
+            // If no matching steps, show an error
+            if (steps.length === 0) {{
+                return `<div class="context-container">
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Prompting Strategy Differences)</div>
+                    <div>No matching steps found in both zero-shot and few-shot data.</div>
+                </div>`;
+            }}
+
+            // Set fixed maximum difference for normalization
+            const maxDiff = 3.0;  // Fixed max diff
+            
+            // Start building HTML
+            let html = `
+                <div class="context-container">
+                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Prompting Strategy Differences: Few-Shot vs Zero-Shot)</div>
+                    <div class="model-diff-legend">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(0, 255, 0);"></div>
+                            <span>Few-shot better than zero-shot (lower loss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
+                            <span>No significant difference</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: rgb(255, 0, 0);"></div>
+                            <span>Zero-shot better than few-shot (lower loss)</span>
+                        </div>
+                    </div>
+            `;
+            
+            // Get token count from first checkpoint
+            const firstStep = steps[0];
+            const firstLosses = zeroShotContextData["checkpoints"][firstStep]["losses"];
+            const tokenCount = firstLosses ? firstLosses.length : 0;
+            
+            // Calculate chunks for wrapping
+            const tokensPerRow = 20;
+            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            
+            // Create the wrapped token grid
+            html += `<div class="token-grid-wrapper"><div class="token-grid">`;
+            
+            // Process tokens in chunks
+            for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {{
+                const startIdx = chunkIdx * tokensPerRow;
+                const endIdx = Math.min(startIdx + tokensPerRow, tokenCount);
+                
+                // Add position header row for this chunk
+                html += '<div class="token-row-header">';
+                html += `<div class="header-cell" style="width: 235px;">Position</div>`;
+                for (let i = startIdx; i < endIdx; i++) {{
+                    html += `<div class="header-cell">${{i}}</div>`;
+                }}
+                html += '</div>';
+                
+                // Add token text header row for this chunk
+                html += '<div class="token-row-header">';
+                html += `<div class="header-cell token-header" style="width: 235px;">Token</div>`;
+                for (let i = startIdx; i < endIdx; i++) {{
+                    if (i < tokens.length) {{
+                        // Handle special characters
+                        let token = tokens[i];
+                        let displayToken = token;
+                        if (displayToken === ' ') {{
+                            displayToken = '␣';
+                        }} else if (displayToken === '\\n') {{
+                            displayToken = '\\\\n';
+                        }}
+                        html += `<div class="header-cell">${{displayToken}}</div>`;
+                    }} else {{
+                        html += `<div class="header-cell">-</div>`;
+                    }}
+                }}
+                html += '</div>';
+                
+                // Add a row for each step
+                for (const step of steps) {{
+                    const zeroShotLosses = zeroShotContextData["checkpoints"][step]["losses"];
+                    const fewShotLosses = fewShotContextData["checkpoints"][step]["losses"];
+                    
+                    // Add step row
+                    html += '<div class="token-row">';
+                    html += `<div class="step-header" style="width: 235px;">Step ${{step}} (Few-Zero)</div>`;
+                    
+                    // Add diff-colored cells for this chunk
+                    for (let i = startIdx; i < endIdx; i++) {{
+                        // Get token for this position
+                        let displayToken = '-';
+                        if (i < tokens.length) {{
+                            const token = tokens[i];
+                            displayToken = token;
+                            if (displayToken === ' ') {{
+                                displayToken = '␣';
+                            }} else if (displayToken === '\\n') {{
+                                displayToken = '\\\\n';
+                            }}
+                        }}
+                        
+                        // Handle cases where data is missing
+                        if (i >= zeroShotLosses.length || i >= fewShotLosses.length || 
+                            zeroShotLosses[i] === null || fewShotLosses[i] === null) {{
+                            html += `
+                                <div class="token-cell tooltip" style="background-color: #ddd;">
+                                    ${{displayToken}}
+                                    <span class="tooltiptext">Position: ${{i}}<br>Missing data</span>
+                                </div>
+                            `;
+                            continue;
+                        }}
+                        
+                        // Calculate the difference: few-shot minus zero-shot
+                        const zeroShotLoss = zeroShotLosses[i];
+                        const fewShotLoss = fewShotLosses[i];
+                        const diff = fewShotLoss - zeroShotLoss;
+                        
+                        // Use a threshold to ignore very small changes
+                        const significanceThreshold = 0.001;
+                        
+                        // Normalize difference for color intensity
+                        let normalizedDiff = 0;
+                        if (maxDiff > 0 && Math.abs(diff) > significanceThreshold) {{
+                            normalizedDiff = Math.min(Math.abs(diff) / maxDiff, 1);
+                        }}
+                        
+                        let r, g, b, symbol = "";
+                        
+                        // Green for few-shot better (lower loss), red for zero-shot better
+                        if (diff < -significanceThreshold) {{  // Few-shot has lower loss (better)
+                            r = 255 * (1 - normalizedDiff);
+                            g = 255;
+                            b = 255 * (1 - normalizedDiff);
+                            symbol = "↓";
+                        }} else if (diff > significanceThreshold) {{  // Zero-shot has lower loss (better)
+                            r = 255;
+                            g = 255 * (1 - normalizedDiff);
+                            b = 255 * (1 - normalizedDiff);
+                            symbol = "↑";
+                        }} else {{  // No significant difference
+                            r = 255;
+                            g = 255;
+                            b = 255;
+                            symbol = "=";
+                        }}
+                        
+                        const color = `rgb(${{r}}, ${{g}}, ${{b}})`;
+                        
+                        html += `
+                            <div class="token-cell tooltip" style="background-color:${{color}};">
+                                ${{displayToken}}
+                                <span class="tooltiptext">
+                                    Position: ${{i}}<br>
+                                    Zero-shot loss: ${{zeroShotLoss.toFixed(4)}}<br>
+                                    Few-shot loss: ${{fewShotLoss.toFixed(4)}}<br>
+                                    Difference (F-Z): ${{diff.toFixed(4)}} ${{symbol}}
+                                </span>
+                            </div>
+                        `;
+                    }}
+                    
+                    html += '</div>'; // End token-row
+                }}
+                
+                // Add spacing between chunks
+                html += '<div style="height: 20px;"></div>';
+            }}
+            
+            html += "</div></div></div>"; // End token-grid, token-grid-wrapper, context-container
+            return html;
+        }}
+
+        // Initialize the visualization when the page loads
+        document.addEventListener('DOMContentLoaded', function() {{
+            // Set default context and model
+            const contextDropdown = document.getElementById('context-dropdown');
+            if (contextDropdown) {{
+                contextDropdown.value = currentContext;
+            }}
+            
+            const modelDropdown = document.getElementById('model-dropdown');
+            if (modelDropdown) {{
+                modelDropdown.value = currentModelSize;
+            }}
+
+            // Set default prompting strategy
+            const promptingRadios = document.getElementsByName('promptingToggle');
+            for (const radio of promptingRadios) {{
+                if (radio.value === currentPromptingStrategy) {{
+                    radio.checked = true;
+                    break;
+                }}
+            }}
+            
+            // Select evenly spaced steps (maximum 15)
+            const allCheckboxes = document.querySelectorAll('.step-checkbox');
+            const allSteps = Array.from(allCheckboxes);
+            
+            // First uncheck all steps
+            allSteps.forEach(cb => cb.checked = false);
+            
+            // If we have more than 15 steps, select evenly spaced ones
+            if (allSteps.length > 15) {{
+                // Calculate the step size to get approximately 15 evenly spaced steps
+                const stepSize = Math.max(1, Math.floor(allSteps.length / 15));
+                
+                // Select every nth step
+                for (let i = 0; i < allSteps.length; i += stepSize) {{
+                    if (allSteps[i]) {{
+                        allSteps[i].checked = true;
+                    }}
+                }}
+                
+                // Ensure we always include the first and last step for better context
+                if (allSteps[0]) {{
+                    allSteps[0].checked = true;
+                }}
+                if (allSteps[allSteps.length - 1]) {{
+                    allSteps[allSteps.length - 1].checked = true;
+                }}
+            }} else {{
+                // If we have 15 or fewer steps, select all of them
+                allSteps.forEach(cb => cb.checked = true);
+            }}
+            
+            // Update the visualization with the evenly spaced steps
             updateVisualization();
         }});
     </script>
@@ -1935,8 +2212,13 @@ def create_single_context_raw_html(results, context_idx, selected_steps, max_los
     preview = context_data.get("preview", "")
     
     # Filter to only include selected steps that exist in the data and sort them numerically
-    steps = sorted([step for step in selected_steps if step in context_data["checkpoints"]], key=int)
-    
+    if selected_steps is None:
+        # Use all available steps if none specified
+        steps = sorted(list(context_data["checkpoints"].keys()), key=int)
+    else:
+        # Otherwise, filter to only include selected steps that exist in the data
+        steps = sorted([step for step in selected_steps if step in context_data["checkpoints"]], key=int)
+        
     # Find max loss across selected checkpoints for normalization
     # If max_loss not provided, calculate it from this context's data
     if max_loss is None:
@@ -2069,34 +2351,35 @@ def create_single_context_raw_html(results, context_idx, selected_steps, max_los
     html += "</div></div></div>"  # End token-grid, token-grid-wrapper, context-container
     return html
 
-def load_pertoken_data(model_sizes, dataset_name, base_dir=None, max_contexts=None, selected_steps=None):
+def load_dm_math_data(model_sizes, base_dir=None, max_contexts=None, selected_steps=None):
     """
-    Load and process the token and loss data for multiple model sizes and a specific dataset.
-    This function handles all the heavy CSV loading and data preprocessing.
+    Load and process the token and loss data for multiple model sizes on dm_mathematics dataset,
+    including both zero-shot and few-shot versions.
     
     Args:
         model_sizes: List of model sizes to visualize
-        dataset_name: Name of the dataset to visualize
         base_dir: Base directory for trajectory data (or None for default)
         max_contexts: Maximum number of contexts to include (or None for all)
         selected_steps: List of specific steps to include (or None for all)
         
     Returns:
-        Dictionary mapping model sizes to their processed results ready for visualization
+        Dictionary mapping model sizes to their processed results for both zero-shot and few-shot
     """
     # Set default base directory if not provided
     if base_dir is None:
-        base_dir = "/Users/liam/quests/lsoc-psych/datasets/experiments/EXP000/trajectories"
+        base_dir = "/path/to/dm_math/trajectories"
     
     # Define directories
     csv_dir = os.path.join(base_dir, "csv")
     tokens_dir = os.path.join(base_dir, "tokens")
     
-    # Load token data (only need to load once for the dataset)
+    # Load token data for both datasets
     print('Loading token data...')
-    tokens_dict = load_token_data(tokens_dir, dataset_name)
-    if not tokens_dict:
-        print(f"Error: No token data found for dataset '{dataset_name}'")
+    zero_shot_tokens = load_token_data(tokens_dir, "dm_mathematics_zero_shot")
+    few_shot_tokens = load_token_data(tokens_dir, "dm_mathematics_few_shot")
+    
+    if not zero_shot_tokens or not few_shot_tokens:
+        print("Error: Missing token data for one or both datasets")
         return {}
     
     # Store results for each model size
@@ -2105,28 +2388,36 @@ def load_pertoken_data(model_sizes, dataset_name, base_dir=None, max_contexts=No
     # Process each model size
     for model_size in model_sizes:
         model_name = f"{model_size}"
-        print(f'Loading loss data for {model_name}...')
+        print(f'Loading data for {model_name}...')
         
-        # Load loss data for this model size
-        df = load_loss_data(csv_dir, model_name, dataset_name, max_contexts)
-        if df.empty:
-            print(f"Warning: No CSV data found for model '{model_name}' and dataset '{dataset_name}'")
-            continue
+        model_results = {"zero_shot": {}, "few_shot": {}}
         
-        # Extract and organize data
-        results = extract_context_data(df, tokens_dict, max_contexts, selected_steps=selected_steps)
-        if not results:
-            print(f"Warning: No matching contexts found between CSV and token data for model '{model_name}'")
-            continue
+        # Load zero-shot data
+        zero_shot_df = load_loss_data(csv_dir, model_name, "dm_mathematics_zero_shot", max_contexts)
+        if not zero_shot_df.empty:
+            zero_shot_results = extract_context_data(zero_shot_df, zero_shot_tokens, max_contexts, selected_steps)
+            model_results["zero_shot"] = zero_shot_results
+        else:
+            print(f"Warning: No zero-shot data found for model '{model_name}'")
+        
+        # Load few-shot data
+        few_shot_df = load_loss_data(csv_dir, model_name, "dm_mathematics_few_shot", max_contexts)
+        if not few_shot_df.empty:
+            few_shot_results = extract_context_data(few_shot_df, few_shot_tokens, max_contexts, selected_steps)
+            model_results["few_shot"] = few_shot_results
+        else:
+            print(f"Warning: No few-shot data found for model '{model_name}'")
         
         # Store results for this model size
-        all_models_results[model_size] = results
+        if model_results["zero_shot"] or model_results["few_shot"]:
+            all_models_results[model_size] = model_results
     
     if not all_models_results:
         print(f"Error: No valid data found for any model size")
         return {}
     
     return all_models_results
+
 
 def visualize_from_loaded_data(all_models_results, dataset_name, steps=None):
     """
@@ -2153,7 +2444,7 @@ def visualize_from_loaded_data(all_models_results, dataset_name, steps=None):
                 steps = list(first_context["checkpoints"].keys())
     
     # Create HTML visualization
-    html_content = create_pertoken_html(all_models_results, steps, dataset_name=dataset_name)
+    html_content = create_dm_math_pertoken_html(all_models_results, steps, dataset_name=dataset_name)
     
     # Return as displayable HTML
     return HTML(html_content)
@@ -2174,7 +2465,7 @@ def visualize_pertoken_losses(model_name, dataset_name, base_dir=None, steps=Non
         IPython.display.HTML object
     """
     # Load data
-    results = load_pertoken_data(model_name, dataset_name, base_dir, max_contexts, selected_steps=steps)
+    results = load_dm_math_data(model_name, dataset_name, base_dir, max_contexts, selected_steps=steps)
     if not results:
         return HTML("<div>Error: Failed to load data</div>")
     
