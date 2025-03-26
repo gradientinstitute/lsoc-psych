@@ -462,13 +462,14 @@ def mse(F, X, mask):
 #     self.V = svd.components_
 #     self.R = self.U @ self.V + self.mu
 
-
 def fill_column_mean(X, mask):
     # Initialise - by filling the masked bits with the column means
-    mu = (X * mask).sum(axis=0) / (~mask).sum(axis=0)
-    col_ix = np.tile(np.arange(X.shape[1]), (X.shape[0], 1))[mask]
+    assert not np.isnan(X[~mask]).any()  # ensure all nan values are masked
     Xd = X.copy()
-    Xd[mask] = B = mu[col_ix]  # Fill with column mean
+    Xd[mask] = 0
+    mu = Xd.sum(axis=0) / (~mask).sum(axis=0)
+    col_ix = np.tile(np.arange(X.shape[1]), (X.shape[0], 1))[mask]
+    Xd[mask] = mu[col_ix]  # Fill with column mean
     return Xd
 
 
