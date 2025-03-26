@@ -111,15 +111,6 @@ def load_loss_data(csv_dir, model_name, dataset_name, max_contexts=None):
 def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None):
     """
     Extract loss data for each context and organize it into a structured format.
-    
-    Args:
-        df: DataFrame with loss data
-        tokens_dict: Dictionary of tokens by context ID
-        max_contexts: Maximum number of contexts to include (or None for all)
-        selected_steps: List of specific steps to include (or None for all)
-        
-    Returns:
-        Dictionary of results organized by context
     """
     results = {}
     
@@ -146,7 +137,7 @@ def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None
     # Sort context IDs
     context_ids = sorted(list(context_ids))
     
-    # Limit contexts if specified - do this BEFORE processing to avoid wasted work
+    # Limit contexts if specified
     if max_contexts and len(context_ids) > max_contexts:
         context_ids = context_ids[:max_contexts]
     
@@ -156,12 +147,16 @@ def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None
         if context_id not in tokens_dict:
             continue
         
-        tokens = tokens_dict[context_id]
+        # Extract token data properly - tokens_dict[context_id] is now a dict with 'tokens' and 'category'
+        token_data = tokens_dict[context_id]
+        tokens = token_data['tokens']  # Get the actual tokens array
+        category = token_data.get('category', 'Unknown')  # Get the category
         context_preview = get_context_preview(tokens)
         
         # Initialize context data
         context_data = {
-            "tokens": tokens,
+            "tokens": tokens,  # Store the entire token data including category
+            "category": category,  # Store the category explicitly
             "preview": context_preview,
             "checkpoints": {}
         }
@@ -196,7 +191,7 @@ def extract_context_data(df, tokens_dict, max_contexts=None, selected_steps=None
     
     return results
 
-def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_name="", dataset_name="dm_mathematics"):
+def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_name="", dataset_name="dm_mathematics", categories_mapping=None):
     """
     Create HTML for per-token loss visualization with interactive controls for dm_mathematics.
     
@@ -205,6 +200,7 @@ def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_
         selected_steps: List of steps to display initially (or None for all)
         model_name: Name of the model being visualized
         dataset_name: Name of the dataset being visualized
+        categories_mapping: Dictionary mapping category names to lists of context IDs
         
     Returns:
         HTML string for display
@@ -229,6 +225,28 @@ def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_
     # Get all context indices
     context_indices = sorted(list(results.keys()), key=int)
     
+    # If no categories mapping provided, create a default one with all contexts in a single category
+    # If no categories mapping provided, create one based on the categories in the data
+    # If no categories mapping provided, create one based on the categories in the data
+    if categories_mapping is None:
+        categories_mapping = {}
+        
+        # Get the first model size data
+        default_model_size = model_sizes[0]
+        zero_shot_results = all_models_results[default_model_size]["zero_shot"]
+        
+        # Group contexts by their categories
+        for context_id, context_data in zero_shot_results.items():
+            category = context_data["category"]
+            if category not in categories_mapping:
+                categories_mapping[category] = []
+            categories_mapping[category].append(context_id)
+
+    # Get the first category as default
+    category_names = list(categories_mapping.keys())
+    default_category = category_names[0] if category_names else ""
+    
+    
     # Get available steps
     available_steps = []
     if context_indices:
@@ -244,16 +262,17 @@ def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_
         available_steps = [step for step in selected_steps if step in available_steps]
     
     # Create context categories with context ID and preview
-    categories = {}
+    context_details = {}
     for context_idx in context_indices:
         if "preview" in results[context_idx]:
             preview = results[context_idx]["preview"]
-            categories[context_idx] = f"Context {context_idx} - {preview}"
+            context_details[context_idx] = f"Context {context_idx} - {preview}"
         else:
-            categories[context_idx] = f"Context {context_idx}"
+            context_details[context_idx] = f"Context {context_idx}"
     
-    # Get the first context as default
-    default_context = context_indices[0] if context_indices else ""
+    # Get the first category as default
+    category_names = list(categories_mapping.keys())
+    default_category = category_names[0] if category_names else ""
     
     # Calculate universal max loss values per context (for both zero and few shot)
     universal_max_losses = {}
@@ -306,29 +325,31 @@ def create_dm_math_pertoken_html(all_models_results, selected_steps=None, model_
         </div>
         """
     
-    # Add controls with prompting strategy options
-    html += create_dm_math_controls_html(available_steps, selected_steps, categories, model_sizes, default_model_size)
+    # Add controls with prompting strategy options and category selector
+    html += create_dm_math_controls_html(available_steps, selected_steps, context_details, categories_mapping, model_sizes, default_model_size)
     
     # Create container for visualization
     html += '<div id="visualization-container">'
     
-    # Add initial context view (first context with zero-shot data)
-    if default_context:
-        # Pass the universal max loss for this context
-        max_loss = universal_max_losses.get(default_context, 0)
-        if zero_shot_results and default_context in zero_shot_results:
-            html += create_single_context_raw_html(zero_shot_results, default_context, selected_steps, max_loss)
-        elif few_shot_results and default_context in few_shot_results:
-            html += create_single_context_raw_html(few_shot_results, default_context, selected_steps, max_loss)
-        else:
-            html += '<div style="text-align: center; padding: 20px; color: #666; font-size: 16px;">No data available for this context.</div>'
+    # Add initial contexts from default category
+    if default_category and default_category in categories_mapping:
+        category_contexts = categories_mapping[default_category]
+        
+        # Loop through each context in the category and add its visualization
+        for context_id in category_contexts:
+            # Pass the universal max loss for this context
+            max_loss = universal_max_losses.get(context_id, 0)
+            if zero_shot_results and context_id in zero_shot_results:
+                html += create_single_context_raw_html(zero_shot_results, context_id, selected_steps, max_loss)
+            elif few_shot_results and context_id in few_shot_results:
+                html += create_single_context_raw_html(few_shot_results, context_id, selected_steps, max_loss)
     else:
-        html += '<div style="text-align: center; padding: 20px; color: #666; font-size: 16px;">No contexts available.</div>'
+        html += '<div style="text-align: center; padding: 20px; color: #666; font-size: 16px;">No categories available.</div>'
     
     html += '</div>'
     
     # Add JavaScript for toggling between views and handling selections
-    html += create_dm_math_toggle_script(all_models_results, context_indices, default_context, default_model_size, universal_max_losses)
+    html += create_dm_math_toggle_script(all_models_results, context_indices, context_details, categories_mapping, default_category, default_model_size, universal_max_losses)
     
     return html
 
@@ -519,6 +540,7 @@ def create_html_styles():
         .token-grid-wrapper {
             overflow-x: auto;
             width: 100%;
+            max-width: 100%;
         }
         
         .token-grid {
@@ -781,9 +803,9 @@ def create_html_styles():
     </style>
     """
 
-def create_dm_math_controls_html(all_steps, selected_steps, categories, model_sizes, default_model_size):
+def create_dm_math_controls_html(all_steps, selected_steps, context_details, categories_mapping, model_sizes, default_model_size):
     """
-    Create HTML for controls with prompting strategy toggle.
+    Create HTML for controls with prompting strategy toggle and category selector.
     """
     # Start with scrolling controls
     html = '''
@@ -820,15 +842,15 @@ def create_dm_math_controls_html(all_steps, selected_steps, categories, model_si
             </div>
         </div>
 
-        <!-- Context selector now in the non-sticky part -->
+        <!-- Category selector now in the non-sticky part -->
         <div class="context-selector">
-            <div class="context-selector-title">Select Context:</div>
-            <select id="context-dropdown" class="context-dropdown" onchange="updateContext()">
+            <div class="context-selector-title">Select Category:</div>
+            <select id="category-dropdown" class="context-dropdown" onchange="updateCategory()">
     '''
 
-    # Add contexts to dropdown
-    for context_id, label in categories.items():
-        html += f'<option value="{context_id}">{label}</option>'
+    # Add categories to dropdown
+    for category_name in categories_mapping.keys():
+        html += f'<option value="{category_name}">{category_name}</option>'
 
     html += '''
             </select>
@@ -902,40 +924,14 @@ def create_dm_math_controls_html(all_steps, selected_steps, categories, model_si
 
     return html
 
-def create_dm_math_toggle_script(all_models_results, context_indices, default_context, default_model_size, universal_max_losses=None):
+def create_dm_math_toggle_script(all_models_results, context_indices, context_details, 
+                                 categories_mapping, default_category, default_model_size, 
+                                 universal_max_losses=None):
     """
     Create JavaScript for toggle functionality and selection with prompting strategy support.
     """
     # Serialize the full results data for JavaScript
     import json
-    
-    # Optimize the JSON serialization
-    optimized_results = {}
-    
-    for model_size, model_data in all_models_results.items():
-        optimized_results[model_size] = {"zero_shot": {}, "few_shot": {}}
-        
-        # Process zero-shot data
-        zero_shot_data = model_data.get("zero_shot", {})
-        for context_id in context_indices:
-            if context_id in zero_shot_data:
-                context_data = zero_shot_data[context_id]
-                optimized_results[model_size]["zero_shot"][context_id] = {
-                    "tokens": context_data["tokens"],
-                    "preview": context_data.get("preview", ""),
-                    "checkpoints": context_data["checkpoints"]
-                }
-        
-        # Process few-shot data
-        few_shot_data = model_data.get("few_shot", {})
-        for context_id in context_indices:
-            if context_id in few_shot_data:
-                context_data = few_shot_data[context_id]
-                optimized_results[model_size]["few_shot"][context_id] = {
-                    "tokens": context_data["tokens"],
-                    "preview": context_data.get("preview", ""),
-                    "checkpoints": context_data["checkpoints"]
-                }
 
     # Serialize the universal max losses
     if universal_max_losses is None:
@@ -943,7 +939,10 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
     universal_max_losses_json = json.dumps(universal_max_losses)
     
     # Use the optimized results for serialization
-    results_json = json.dumps(optimized_results)
+    results_json = json.dumps(all_models_results)
+    # Serialize context details and categories mapping
+    context_details_json = json.dumps(context_details)
+    categories_mapping_json = json.dumps(categories_mapping)
 
 
     return f"""
@@ -951,12 +950,14 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
         // Store the full results data for dynamic processing
         const fullModelResults = {results_json};
         const contextIndices = {json.dumps(context_indices)};
+        const contextDetails = {context_details_json};
+        const categoriesMapping = {categories_mapping_json};
         const universalMaxLosses = {universal_max_losses_json};
         let currentView = 'raw';
-        let currentContext = "{default_context}";
+        let currentCategory = "{default_category}";
         let currentModelSize = "{default_model_size}";
         let currentPromptingStrategy = "zero_shot";
-        let diffMode = 'absolute'; 
+        let diffMode = 'absolute';
         
         // Update prompting strategy when radio buttons change
         function updatePromptingStrategy() {{
@@ -979,11 +980,13 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
 
         // Update when base model dropdown changes
         function updateBaseModel() {{
+            const baseModel = document.getElementById('model-base-dropdown').value;
             updateVisualization();
         }}
 
         // Update when compare model dropdown changes
         function updateCompareModel() {{
+            const compareModel = document.getElementById('model-compare-dropdown').value;
             updateVisualization();
         }}
 
@@ -1095,17 +1098,18 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                     modelComparisonContainer.style.display = 'flex';
                     
                     // Set up model comparison dropdowns
+                    // Set up model comparison dropdowns
                     const modelComparisonSelectors = document.querySelector('.model-comparison-selectors');
                     if (modelComparisonSelectors) {{
                         modelComparisonSelectors.innerHTML = `
                             <div class="dropdown-with-label">
                                 <span class="model-label"><b>(A)</b></span>
-                                <select id="model-base-dropdown" class="model-dropdown"></select>
+                                <select id="model-base-dropdown" class="model-dropdown" onchange="updateVisualization()"></select>
                             </div>
                             <span class="comparison-vs">vs</span>
                             <div class="dropdown-with-label">
                                 <span class="model-label"><b>(B)</b></span>
-                                <select id="model-compare-dropdown" class="model-dropdown"></select>
+                                <select id="model-compare-dropdown" class="model-dropdown" onchange="updateVisualization()"></select>
                             </div>
                         `;
                     }}
@@ -1115,8 +1119,6 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                     const compareDropdown = document.getElementById('model-compare-dropdown');
                     
                     if (baseDropdown && compareDropdown) {{
-                        baseDropdown.onchange = updateBaseModel;
-                        compareDropdown.onchange = updateCompareModel;
                         // Clear existing options
                         baseDropdown.innerHTML = '';
                         compareDropdown.innerHTML = '';
@@ -1210,18 +1212,21 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
         function selectAllSteps() {{
             const checkboxes = document.querySelectorAll('.step-checkbox');
             checkboxes.forEach(cb => cb.checked = true);
+            // Important: Update the visualization after changing selections
+            updateVisualization();
         }}
         
         // Deselect all steps
         function deselectAllSteps() {{
             const checkboxes = document.querySelectorAll('.step-checkbox');
             checkboxes.forEach(cb => cb.checked = false);
+            // Important: Don't update here as we need at least one step selected
         }}
         
         // Update context when dropdown changes
-        function updateContext() {{
-            const dropdown = document.getElementById('context-dropdown');
-            currentContext = dropdown.value;
+        function updateCategory() {{
+            const dropdown = document.getElementById('category-dropdown');
+            currentCategory = dropdown.value;
             updateVisualization();
         }}
         
@@ -1238,7 +1243,10 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             
             // Generate HTML based on the current view
             let html = '';
-            
+
+            // Get contexts for the current category
+            const contextIdsInCategory = categoriesMapping[currentCategory] || [];
+
             if (currentView === 'modeldiff') {{
                 // For model diff view, get data from both selected models
                 const baseModelSize = document.getElementById('model-base-dropdown').value;
@@ -1251,16 +1259,23 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                 const baseResults = baseModelResults[currentPromptingStrategy] || {{}};
                 const compareResults = compareModelResults[currentPromptingStrategy] || {{}};
                 
-                html = createModelDiffHtml(baseResults, compareResults, currentContext, selectedSteps, 
-                                          baseModelSize, compareModelSize, currentPromptingStrategy);
+                // Generate visualizations for each context in the category
+                for (const contextId of contextIdsInCategory) {{
+                    html += createModelDiffHtml(baseResults, compareResults, contextId, selectedSteps, 
+                                            baseModelSize, compareModelSize, currentPromptingStrategy);
+                }}
             }}
+            // Inside your updateVisualization function, replace the 'promptdiff' section:
             else if (currentView === 'promptdiff') {{
                 // For prompting diff view, compare zero-shot and few-shot for the current model
                 const modelResults = fullModelResults[currentModelSize] || {{}};
                 const zeroShotResults = modelResults["zero_shot"] || {{}};
                 const fewShotResults = modelResults["few_shot"] || {{}};
                 
-                html = createPromptingDiffHtml(zeroShotResults, fewShotResults, currentContext, selectedSteps);
+                // Generate visualizations for each context in the category
+                for (const contextId of contextIdsInCategory) {{
+                    html += createPromptingDiffHtml(zeroShotResults, fewShotResults, contextId, selectedSteps);
+                }}
             }}
             else {{
                 // For raw or step-diff views, use the single selected model and prompting strategy
@@ -1268,9 +1283,15 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                 const results = modelResults[currentPromptingStrategy] || {{}};
                 
                 if (currentView === 'raw') {{
-                    html = createSingleContextRawHtml(results, currentContext, selectedSteps);
+                    // Generate raw loss view for each context in the category
+                    for (const contextId of contextIdsInCategory) {{
+                        html += createSingleContextRawHtml(results, contextId, selectedSteps);
+                    }}
                 }} else {{
-                    html = createSingleContextStepDiffHtml(results, currentContext, selectedSteps);
+                    // Generate step difference view for each context in the category
+                    for (const contextId of contextIdsInCategory) {{
+                        html += createSingleContextStepDiffHtml(results, contextId, selectedSteps);
+                    }}
                 }}
             }}
             
@@ -1301,7 +1322,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // Start building HTML
             let html = `
                 <div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Raw Loss - ${{currentPromptingStrategy.replace('_', '-')}})</div>
+                    <div class="context-title">Context ${{contextId}} - ${{contextData["category"]}} (Raw Loss - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div class="legend-container">
                         <div class="legend-item">
                             <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
@@ -1326,8 +1347,8 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             const tokenCount = firstLosses ? firstLosses.length : 0;
             
             // Calculate chunks for wrapping
-            const tokensPerRow = 20;
-            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            const tokensPerRow = tokenCount;  // Use all tokens in one row
+            const numChunks = 1;  // Only create one chunk
             
             // Create the wrapped token grid
             html += `<div class="token-grid-wrapper"><div class="token-grid">`;
@@ -1454,7 +1475,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // If no steps or only one step, can't show differences
             if (steps.length < 2) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
+                    <div class="context-title">Context ${{contextId}} - ${{contextData["category"]}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div>At least two steps must be selected to show differences.</div>
                 </div>`;
             }}
@@ -1465,7 +1486,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // Start building HTML
             let html = `
                 <div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
+                    <div class="context-title">Context ${{contextId}} - ${{contextData["category"]}} (Step-by-Step Differences - ${{currentPromptingStrategy.replace('_', '-')}})</div>
                     <div class="legend-container">
                         <div class="legend-item">
                             <div class="legend-color" style="background-color: rgb(255, 255, 255);"></div>
@@ -1488,8 +1509,9 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             const tokenCount = firstLosses ? firstLosses.length : 0;
             
             // Calculate chunks for wrapping
-            const tokensPerRow = 20;
-            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            // Display all tokens in a single table without chunking
+            const tokensPerRow = tokenCount;  // Use all tokens in one row
+            const numChunks = 1;  // Only create one chunk
             
             // Create the wrapped token grid
             html += `<div class="token-grid-wrapper"><div class="token-grid">`;
@@ -1689,6 +1711,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                                     <div class="token-cell tooltip" style="background-color:${{color}};">
                                         ${{displayToken}}
                                         <span class="tooltiptext">Position: ${{i}}<br>Previous loss (Step ${{prevStep}}): ${{prevLoss.toFixed(4)}}<br>Current loss (Step ${{step}}): ${{loss.toFixed(4)}}<br>Difference: ${{diff.toFixed(4)}} ${{arrow}}</span>
+
                                     </div>
                                 `;
                             }}
@@ -1708,7 +1731,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
 
         // Create HTML for model size difference visualization
         function createModelDiffHtml(baseResults, compareResults, contextId, selectedSteps, 
-                                   baseModelSize, compareModelSize, promptingStrategy) {{
+                                baseModelSize, compareModelSize, promptingStrategy) {{
             // Get data for the context from both models
             const baseContextData = baseResults[contextId];
             const compareContextData = compareResults[contextId];
@@ -1721,7 +1744,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             }}
             
             const tokens = baseContextData["tokens"]; // Use tokens from base model
-            const preview = baseContextData["preview"] || "";
+            const category = baseContextData["category"] || "Unknown";
             
             // Ensure steps are filtered and exist in both model datasets
             const steps = selectedSteps
@@ -1736,7 +1759,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // If no matching steps, show an error
             if (steps.length === 0) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Model Differences)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{category}} (Model Differences)</div>
                     <div>No matching steps found in both models.</div>
                 </div>`;
             }}
@@ -1752,9 +1775,9 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // Update the title text based on the difference mode and prompting strategy
             let titleText = '';
             if (diffMode === 'absolute') {{
-                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} - ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
+                titleText = `Context ${{contextId}} - ${{category}} (Model Differences: ${{compareModelSize}} - ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
             }} else {{
-                titleText = `Context ${{contextId}} - ${{preview}} (Model Differences: ${{compareModelSize}} / ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
+                titleText = `Context ${{contextId}} - ${{category}} (Model Differences: ${{compareModelSize}} / ${{baseModelSize}}, ${{promptingStrategy.replace('_', '-')}})`;
             }}
             
             // Start building HTML
@@ -1782,9 +1805,9 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             const firstLosses = baseContextData["checkpoints"][firstStep]["losses"];
             const tokenCount = firstLosses ? firstLosses.length : 0;
             
-            // Calculate chunks for wrapping
-            const tokensPerRow = 20;
-            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            // Display all tokens in a single table without chunking
+            const tokensPerRow = tokenCount;  // Use all tokens in one row
+            const numChunks = 1;  // Only create one chunk
             
             // Create the wrapped token grid
             html += `<div class="token-grid-wrapper"><div class="token-grid">`;
@@ -1952,6 +1975,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // Prefer zero-shot tokens for consistency
             const tokens = zeroShotContextData["tokens"]; 
             const preview = zeroShotContextData["preview"] || "";
+            const category = zeroShotContextData["category"] || "Unknown";
             
             // Ensure steps are filtered and exist in both datasets
             const steps = selectedSteps
@@ -1966,7 +1990,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // If no matching steps, show an error
             if (steps.length === 0) {{
                 return `<div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Prompting Strategy Differences)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{category}} (Prompting Strategy Differences)</div>
                     <div>No matching steps found in both zero-shot and few-shot data.</div>
                 </div>`;
             }}
@@ -1977,7 +2001,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             // Start building HTML
             let html = `
                 <div class="context-container">
-                    <div class="context-title">Context ${{contextId}} - ${{preview}} (Prompting Strategy Differences: Few-Shot vs Zero-Shot)</div>
+                    <div class="context-title">Context ${{contextId}} - ${{category}} (Prompting Strategy Differences: Few-Shot vs Zero-Shot)</div>
                     <div class="model-diff-legend">
                         <div class="legend-item">
                             <div class="legend-color" style="background-color: rgb(0, 255, 0);"></div>
@@ -2000,8 +2024,9 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
             const tokenCount = firstLosses ? firstLosses.length : 0;
             
             // Calculate chunks for wrapping
-            const tokensPerRow = 20;
-            const numChunks = Math.ceil(tokenCount / tokensPerRow);
+            // Display all tokens in a single table without chunking
+            const tokensPerRow = tokenCount;  // Use all tokens in one row
+            const numChunks = 1;  // Only create one chunk
             
             // Create the wrapped token grid
             html += `<div class="token-grid-wrapper"><div class="token-grid">`;
@@ -2117,7 +2142,7 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
                                     Position: ${{i}}<br>
                                     Zero-shot loss: ${{zeroShotLoss.toFixed(4)}}<br>
                                     Few-shot loss: ${{fewShotLoss.toFixed(4)}}<br>
-                                    Difference (F-Z): ${{diff.toFixed(4)}} ${{symbol}}
+                                    Difference (F-Z): ${{diff.toFixed(4)}}
                                 </span>
                             </div>
                         `;
@@ -2137,9 +2162,9 @@ def create_dm_math_toggle_script(all_models_results, context_indices, default_co
         // Initialize the visualization when the page loads
         document.addEventListener('DOMContentLoaded', function() {{
             // Set default context and model
-            const contextDropdown = document.getElementById('context-dropdown');
-            if (contextDropdown) {{
-                contextDropdown.value = currentContext;
+            const categoryDropdown = document.getElementById('category-dropdown');
+            if (categoryDropdown) {{
+                categoryDropdown.value = currentCategory;
             }}
             
             const modelDropdown = document.getElementById('model-dropdown');
@@ -2210,6 +2235,7 @@ def create_single_context_raw_html(results, context_idx, selected_steps, max_los
     context_data = results[context_idx]
     tokens = context_data["tokens"]
     preview = context_data.get("preview", "")
+    category = context_data["category"]
     
     # Filter to only include selected steps that exist in the data and sort them numerically
     if selected_steps is None:
@@ -2257,9 +2283,9 @@ def create_single_context_raw_html(results, context_idx, selected_steps, max_los
     first_losses = context_data["checkpoints"][first_step]["losses"]
     token_count = len(first_losses)
     
-    # Calculate number of chunks (wrap every 20 tokens)
-    tokens_per_row = 20
-    num_chunks = (token_count + tokens_per_row - 1) // tokens_per_row
+    # Display all tokens in a single table without chunking
+    tokens_per_row = token_count  # Use all tokens in one row
+    num_chunks = 1  # Only create one chunk
     
     # Create the token grid with wrapped chunks
     html += '<div class="token-grid-wrapper">'
@@ -2448,26 +2474,3 @@ def visualize_from_loaded_data(all_models_results, dataset_name, steps=None):
     
     # Return as displayable HTML
     return HTML(html_content)
-
-def visualize_pertoken_losses(model_name, dataset_name, base_dir=None, steps=None, max_contexts=None):
-    """
-    Create and display a per-token loss visualization for a specific model and dataset.
-    This function is kept for backward compatibility but internally uses the split functions.
-    
-    Args:
-        model_name: Name of the model to visualize
-        dataset_name: Name of the dataset to visualize
-        base_dir: Base directory for trajectory data (or None for default)
-        steps: List of steps to display initially (or None for all)
-        max_contexts: Maximum number of contexts to include (or None for all)
-        
-    Returns:
-        IPython.display.HTML object
-    """
-    # Load data
-    results = load_dm_math_data(model_name, dataset_name, base_dir, max_contexts, selected_steps=steps)
-    if not results:
-        return HTML("<div>Error: Failed to load data</div>")
-    
-    # Visualize
-    return visualize_from_loaded_data(results, model_name, dataset_name, steps)
