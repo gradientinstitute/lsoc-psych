@@ -4,21 +4,12 @@ from scipy import linalg
 from scipy.cluster import hierarchy
 
 
-def load(name):
-    if name == "p70m":
-        return load_pythia_table("70m")[0]
-    elif name == "helm":
-        return load_helm()
-    elif name == "synthetic":
-        return synthetic()
-    else:
-        raise NotImplementedError()
+default_path = __file__.split("/src/")[0] + "/data"
 
 
-def load_pythia_table(model_size):
-    assert model_size == "70m"
-
-    df = pd.read_csv(f'data/p{model_size}.csv')
+def pythia_70m_steps(path=default_path, return_std=False):
+    model_size="70m"
+    df = pd.read_csv(f'{path}/llc/p{model_size}.csv')
     df['step'] = df['models'].str.extract(r'_(\d+)').astype(int)
     df = df.set_index('step').drop('models', axis=1)  # Go numerical for this dataset
     df.columns.name = "Tasks"
@@ -29,15 +20,10 @@ def load_pythia_table(model_size):
     X = df[Xcols]
     stds = df[Scols]
 
-    return X, stds
+    if return_std:
+        return X, stds
 
-
-def load_helm():
-    """Load scraped HELM leaderboard (single modality)."""
-    df = pd.read_csv('data/helm.csv')
-    df.set_index('Unnamed: 0', inplace=True)
-    df.index.name = "Model"
-    return df
+    return X
 
 
 def synthetic(n_samples, n_features, rank):
@@ -77,42 +63,6 @@ def preorder(X):
         raise NotImplementedError("Unsupported format.")
 
     return ordered
-
-
-def scale(X, method="standard"):
-    if method == "none":
-        return X.copy()
-    elif method == "modality":
-        T, indices = df_to_tensor(X)
-        for i in range(T.shape[-1]):
-            T[:, :, i] /= np.std(T[:, :, i].ravel())
-        return tensor_to_df(T, indices)
-
-    if isinstance(X, pd.DataFrame):
-        values = X.values
-    else:
-        values = X
-
-    scaled = values.copy()  # We're about to modify them inplace
-
-    if method == "positive":
-        scaled -= scaled.min(axis=0)
-        scaled /= scaled.max(axis=0)
-    elif method == "standard":
-        scaled -= scaled.mean(axis=0)
-        scaled /= scaled.std(axis=0)
-
-    else:
-        raise NotImplementedError()
-
-    if isinstance(X, pd.DataFrame):
-        scaled = pd.DataFrame(
-            scaled,
-            columns=X.columns,
-            index=X.index,
-        )
-
-    return scaled
 
 
 def df_to_tensor(X):

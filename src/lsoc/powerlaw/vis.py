@@ -1,8 +1,12 @@
 import plotly.graph_objects as go  # temporarily don't drop
 import plotly.express as px
 import numpy as np
-from data_utils import Trace
-from fitting import FitResult
+from .data import Trace
+from .fit import FitResult
+
+
+llc_desc = r"$\text{Estimated and transformed LLC }\,\frac{1}{100}\hat{\lambda}$"
+loss_desc = r"$\text{Loss }L$"
 
 
 def dict2txt(params_dict, on="<br>"):

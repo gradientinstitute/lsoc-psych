@@ -4,7 +4,10 @@ import numpy as np
 from collections import namedtuple
 
 
-# Load these once and keep in memory
+default_path = __file__.split("/src/")[0] + "/data/llc"
+
+
+# These aren't too big so cache in memory
 df_llc_sparse = None
 df_llc_dense = None
 df_loss_sparse = None
@@ -12,7 +15,9 @@ df_loss_dense = None
 df_llc_nb10 = None
 
 
-def reload_data(data_path):
+def reload_data(data_path=default_path):
+    """Data Loading. Evolving format."""
+
     global df_loss_sparse, df_llc_sparse
     global df_loss_dense, df_llc_dense
     global df_llc_nb10
@@ -82,13 +87,8 @@ def reload_data(data_path):
         df_llc_dense.set_index('Step', inplace=True)
 
 
-def load_dfs(code, data_path):
-    """Data Loading.
-    - updated to 28/1/2024 format with dense results specifically for pythia-410m.
-    - (this shall be "410m-dense")
-    - updated to 24/1/2024 format
-    """
-
+def load_dfs(code, data_path=default_path):
+    """Get the dataframes for a particular model size / setting."""
     # We are in a half-way kind of state where some models are dense
     # and others are sparse
     global df_loss_sparse, df_llc_sparse
@@ -155,14 +155,14 @@ def load_dfs(code, data_path):
     return task_llc / 100., task_loss
 
 
-# Trace is just a named tuple
+# Trace is just a named tuple 
 Trace = namedtuple('Trace', ['x','y','s'])
 
 
 def trim_trace(df_llc, df_loss, task, start=0, finish=1e10):
     """
-    Extract and trim (by step) a task from the data.
-    Returns 1D arrays for LLC, Loss and Step.
+    Extract and trim (by step) a single task from the data.
+    Returns 1D arrays for LLC, Loss and Step so you can permute them.
     Inclusive of start and finish step.
     """
     # assert (df_loss.columns == df_llc.columns).all() not needed to be true
@@ -197,23 +197,3 @@ def split(trace, cutoff_step):
     x_train, y_train, s_train = x[:cut], y[:cut], s[:cut]
     x_test, y_test, s_test = x[cut:], y[cut:], s[cut:]
     return Trace(x_train, y_train, s_train), Trace(x_test, y_test, s_test)
-
-
-def old_load_dfs(msize, data_path):
-    """Data loading pre 24/1/2024 fmt"""
-
-    with open(f'{data_path}/pile_{msize}_subset_loss_df.pkl', 'rb') as file:
-       df_loss = pickle.load(file)
-
-    with open(f'{data_path}/pile_{msize}_subset_llc_df.pkl', 'rb') as file:
-      df_llc = pickle.load(file)
-
-    step = "step" if "step" in df_loss.columns else "Step"
-    df_loss.set_index(step, inplace=True)
-    df_llc.set_index(step, inplace=True)
-    df_llc = df_llc / 100.  # adjust the scale
-
-    return df_llc, df_loss
-
-
-
