@@ -16,6 +16,7 @@ import csv
 
 ### LOAD DATA ###
 
+
 def load_token_mapping(experiment_name, dataset_name):
     """
     Load token mapping from the tokens pickle file.
@@ -52,7 +53,7 @@ def load_token_mapping(experiment_name, dataset_name):
     return token_mapping
 
 
-def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column_fraction=1.0):
+def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, num_contexts=None):
     """
     Load trajectory data for a given dataset name and experiment name.
     
@@ -60,8 +61,9 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
         experiment_name (str): Name of the experiment (e.g., "EXP000")
         dataset_name (str): Name of the dataset
         model_sizes (list, optional): List of model sizes to load. If None, loads all available.
-        column_fraction (float, optional): Fraction of columns to load (between 0 and 1).
-                                          Helps with loading large files more quickly.
+        num_contexts (int, optional): Number of contexts to load. If None, loads all contexts.
+                                     This will select columns containing "context_0", "context_1", etc.
+                                     up to "context_{num_contexts-1}"
     
     Returns:
         dict: Dictionary where keys are model sizes and values are the corresponding dataframes
@@ -79,8 +81,62 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
     # Dictionary to store dataframes for each model size
     trajectory_data = {}
     
-    # Sample columns if column_fraction < 1.0
-    sampled_columns = None
+    # Determine columns to select if num_contexts is specified
+    context_columns = None
+    if num_contexts is not None:
+        # Use the first model size's file to get column names
+        first_model_size = model_sizes[0]
+        first_file_path = os.path.join(base_path, f"{first_model_size}_{dataset_name}.csv")
+        
+        if not os.path.exists(first_file_path):
+            print(f"Warning: File not found for model size {first_model_size}, dataset {dataset_name}")
+            return {}
+            
+        # Read just the header to get column names
+        with open(first_file_path, 'r') as f:
+            all_columns = next(csv.reader(f))
+        
+        # Always include 'step' column
+        step_column = ['step']
+        
+        # Extract all unique context indices that exist in the column names
+        context_indices = set()
+        for col in all_columns:
+            if col.startswith('context_'):
+                try:
+                    # Extract the context index from the column name
+                    # Format: context_X_pos_Y where X is the context index
+                    parts = col.split('_pos_')
+                    if len(parts) == 2:
+                        context_prefix = parts[0]  # e.g., "context_123"
+                        context_index = int(context_prefix.split('_')[1])
+                        context_indices.add(context_index)
+                except (ValueError, IndexError):
+                    continue  # Skip columns that don't match the expected format
+        
+        # Sort the context indices and take the first num_contexts
+        sorted_context_indices = sorted(context_indices)
+        if len(sorted_context_indices) < num_contexts:
+            print(f"Warning: Requested {num_contexts} contexts but only {len(sorted_context_indices)} available")
+            selected_context_indices = sorted_context_indices
+        else:
+            selected_context_indices = sorted_context_indices[:num_contexts]
+        
+        # Create a set of valid context prefixes for the selected indices
+        valid_prefixes = set(f"context_{i}_" for i in selected_context_indices)
+        
+        # Filter columns for the selected context indices
+        context_specific_columns = []
+        for col in all_columns:
+            parts = col.split('_pos_')
+            if len(parts) == 2 and parts[0] + '_' in valid_prefixes:
+                context_specific_columns.append(col)
+        
+        # Create final list of columns to load (step + context-specific)
+        context_columns = step_column + context_specific_columns
+        
+        print(f"Loading columns for {len(selected_context_indices)} contexts")
+        print(f"Selected context indices: {selected_context_indices[:5]}... (total: {len(selected_context_indices)})")
     
     # Load data for each model size
     for model_size in tqdm(model_sizes, desc="Loading trajectory data"):
@@ -90,36 +146,9 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
             print(f"Warning: File not found for model size {model_size}, dataset {dataset_name}")
             continue
         
-        # For the first model, determine columns to sample if needed
-        if column_fraction < 1.0 and sampled_columns is None:
-            # Read just the header to get column names
-            # header_df = pd.read_csv(file_path, nrows=0)
-            # all_columns = header_df.columns.tolist()
-            with open(file_path, 'r') as f:
-                all_columns = next(csv.reader(f))
-            
-            # Always include 'step' column
-            non_step_columns = [col for col in all_columns if col != 'step']
-            
-            # Calculate number of columns to sample
-            num_cols_to_sample = max(1, int(len(non_step_columns) * column_fraction))
-            
-            # Randomly sample columns
-            # np.random.seed(42)  # For reproducibility
-            # sampled_non_step_columns = np.random.choice(non_step_columns, 
-            #                                            size=num_cols_to_sample, 
-            #                                            replace=False)
-            # Get first num_cols_to_sample columns
-            sampled_non_step_columns = non_step_columns[:num_cols_to_sample]
-            
-            # Create final list of columns to load (step + sampled)
-            sampled_columns = ['step'] + sampled_non_step_columns
-            
-            print(f"Loading {len(sampled_columns)-1} out of {len(non_step_columns)} columns")
-        
-        # Load the data, using sampled columns if applicable
-        if column_fraction < 1.0:
-            df = pd.read_csv(file_path, usecols=sampled_columns)
+        # Load the data, using filtered columns if applicable
+        if num_contexts is not None:
+            df = pd.read_csv(file_path, usecols=context_columns)
         else:
             df = pd.read_csv(file_path)
         
@@ -149,7 +178,6 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
     # Create a new ordered dictionary
     ordered_trajectory_data = {model_size: trajectory_data[model_size] for model_size in sorted_model_sizes}
     
-        
     return ordered_trajectory_data
 
 ### APPLY TRAJECTORY PCA ###
@@ -166,17 +194,18 @@ class TrajectoryPCA:
     5. Storing the transformed trajectories back in the original data structure
     """
     
-    def __init__(self, trajectory_data: Dict[str, pd.DataFrame], start_step, 
-                 n_components: int = 10, n_sparse_components: int = 0, scale: bool = False,
-                 sparse_pca_params: Optional[Dict] = None, run_at_init: bool = False,
-                 dataset_name=None):
+    def __init__(self, trajectory_data: Dict[str, pd.DataFrame], 
+             step_range=[None, None], 
+             n_components: int = 10, n_sparse_components: int = 0, scale: bool = False,
+             sparse_pca_params: Optional[Dict] = None, run_at_init: bool = False,
+             dataset_name=None, num_contexts=None):
         """
         Initialize TrajectoryPCA with trajectory data.
         
         Args:
             trajectory_data (dict): Dictionary where keys are model sizes and 
                                     values are the corresponding dataframes
-            start_step: Starting step to include in the analysis
+            step_range (list): [min_step, max_step] to include in the analysis
             n_components (int): Number of regular PCA components to use
             n_sparse_components (int): Number of sparse PCA components to extract from residuals
             scale (bool): Whether to standardize the data before PCA
@@ -184,19 +213,27 @@ class TrajectoryPCA:
             run_at_init (bool): Whether to run the PCA pipeline during initialization
         """
         # Input data and parameters
-        self.trajectory_data = trajectory_data
-        self.start_step = start_step
+        self.trajectory_data = {}
+        self.step_range = step_range
         self.n_components = n_components
         self.n_sparse_components = n_sparse_components
         self.scale = scale
         self.sparse_pca_params = sparse_pca_params or {}
         self.dataset_name = dataset_name
+        self.num_contexts = num_contexts
         
-        # Filter data by start_step
-        for model_size in self.trajectory_data:
-            self.trajectory_data[model_size] = self.trajectory_data[model_size][
-                self.trajectory_data[model_size]['step'] >= start_step
+        # Copy the data, filtering by step_range
+        for model_size, df in trajectory_data.items():
+            df_copy = df.copy()
+            min_step = self.step_range[0] if self.step_range[0] is not None else df_copy['step'].min()
+            max_step = self.step_range[1] if self.step_range[1] is not None else df_copy['step'].max()
+            self.trajectory_data[model_size] = df_copy[
+                (df_copy['step'] >= min_step) & 
+                (df_copy['step'] <= max_step)
             ]
+
+        self.min_step = min_step
+        self.max_step = max_step
 
         # Model attributes
         self.model_sizes = list(trajectory_data.keys())
@@ -282,12 +319,12 @@ class TrajectoryPCA:
         print(f"Concatenated matrix shape: {concatenated.shape}")
         return concatenated
     
-    def fit_pca(self) -> Tuple[PCA, Optional[SparsePCA]]:
+    def fit_pca(self) -> Tuple[Optional[PCA], Optional[SparsePCA]]:
         """
         Fit PCA on the concatenated trajectory data, followed by sparse PCA on residuals if requested.
         
         Returns:
-            Tuple[PCA, Optional[SparsePCA]]: Fitted PCA and SparsePCA objects (if applicable)
+            Tuple[Optional[PCA], Optional[SparsePCA]]: Fitted PCA and SparsePCA objects (if applicable)
         """
         if self.concatenated_matrix is None:
             self.concatenate_trajectories()
@@ -297,27 +334,36 @@ class TrajectoryPCA:
             self.scaler = StandardScaler()
             scaled_data = self.scaler.fit_transform(self.concatenated_matrix)
         else:
-            scaled_data = self.concatenated_matrix  # PCA will handle centering internally
+            scaled_data = self.concatenated_matrix
             
-        # Fit regular PCA
-        self.pca = PCA(n_components=self.n_components)
-        pca_transformed = self.pca.fit_transform(scaled_data)
+        # Initialize PCA and sparse PCA objects to None
+        self.pca = None
+        self.sparse_pca = None
         
-        # Print explained variance for regular PCA
-        explained_var = self.pca.explained_variance_ratio_
-        cumulative_var = np.cumsum(explained_var)
+        # Fit regular PCA if n_components > 0
+        if self.n_components > 0:
+            self.pca = PCA(n_components=self.n_components)
+            self.pca.fit_transform(scaled_data)
+            
+            # Print explained variance for regular PCA
+            explained_var = self.pca.explained_variance_ratio_
+            cumulative_var = np.cumsum(explained_var)
+            
+            print(f"Regular PCA: Top {self.n_components} components explain {cumulative_var[-1]*100:.2f}% of variance")
+            print(f"Individual explained variance: {explained_var}")
         
-        print(f"Regular PCA: Top {self.n_components} components explain {cumulative_var[-1]*100:.2f}% of variance")
-        print(f"Individual explained variance: {explained_var}")
-        
-        # Calculate residuals after regular PCA
+        # Fit sparse PCA if n_sparse_components > 0
         if self.n_sparse_components > 0:
-            # Calculate residuals using inverse_transform
-            pca_transformed = self.pca.transform(scaled_data)
-            reconstructed_data = self.pca.inverse_transform(pca_transformed)
-            self.pca_residual_matrix = scaled_data - reconstructed_data
-            
-            print(f"Residual matrix shape after regular PCA: {self.pca_residual_matrix.shape}")
+            # Calculate residuals if regular PCA was performed
+            if self.pca is not None:
+                pca_transformed = self.pca.transform(scaled_data)
+                reconstructed_data = self.pca.inverse_transform(pca_transformed)
+                self.pca_residual_matrix = scaled_data - reconstructed_data
+                print(f"Residual matrix shape after regular PCA: {self.pca_residual_matrix.shape}")
+            else:
+                # If no regular PCA was performed, use the original scaled data
+                self.pca_residual_matrix = scaled_data
+                print(f"Using full matrix for sparse PCA (no regular PCA performed): {self.pca_residual_matrix.shape}")
             
             # Default sparse PCA parameters
             default_sparse_params = {
@@ -331,17 +377,15 @@ class TrajectoryPCA:
             # Update with user-provided parameters
             sparse_params = {**default_sparse_params, **self.sparse_pca_params}
             
-            # Fit sparse PCA on residuals
+            # Fit sparse PCA on residuals or original data
             self.sparse_pca = SparsePCA(n_components=self.n_sparse_components, **sparse_params)
-            sparse_transformed = self.sparse_pca.fit_transform(self.pca_residual_matrix)
+            self.sparse_pca.fit_transform(self.pca_residual_matrix)
             
             # Calculate sparsity of components
             component_sparsity = self.get_sparse_component_sparsity()
                 
-            print(f"Sparse PCA: {self.n_sparse_components} components extracted from residuals")
+            print(f"Sparse PCA: {self.n_sparse_components} components extracted")
             print(f"Sparsity of components (fraction of zero values): {component_sparsity}")
-        else:
-            self.sparse_pca = None
             
         return self.pca, self.sparse_pca
     
@@ -353,8 +397,8 @@ class TrajectoryPCA:
         Returns:
             dict: Dictionary of transformed trajectories for each model size
         """
-        if self.pca is None:
-            raise ValueError("PCA not fitted yet. Call fit_pca() first.")
+        if self.pca is None and self.sparse_pca is None:
+            raise ValueError("Neither PCA nor sparse PCA fitted. Call fit_pca() first.")
             
         transformed_data = {}
         
@@ -368,24 +412,35 @@ class TrajectoryPCA:
             if self.scaler is not None:
                 processed_data = self.scaler.transform(model_data)
             else:
-                processed_data = model_data  # PCA.transform will handle centering
+                processed_data = model_data
                 
-            # Transform using regular PCA
-            pca_transformed = self.pca.transform(processed_data)
+            # Initialize transformed DataFrame
+            transformed_df = pd.DataFrame()
             
-            # Create column names for regular PCA components
-            pca_component_cols = [f"PC{i+1}" for i in range(pca_transformed.shape[1])]
-            
-            # Initialize transformed DataFrame with regular PCA components
-            transformed_df = pd.DataFrame(pca_transformed, columns=pca_component_cols)
-            
-            # Add sparse PCA components if applicable
-            if self.sparse_pca is not None:
-                # Calculate residuals using inverse_transform
-                reconstructed_data = self.pca.inverse_transform(pca_transformed)
-                model_residuals = processed_data - reconstructed_data
+            # Transform using regular PCA if it was fitted
+            if self.pca is not None:
+                pca_transformed = self.pca.transform(processed_data)
                 
-                # Transform residuals using sparse PCA
+                # Create column names for regular PCA components
+                pca_component_cols = [f"PC{i+1}" for i in range(pca_transformed.shape[1])]
+                
+                # Add regular PCA components to DataFrame
+                pca_df = pd.DataFrame(pca_transformed, columns=pca_component_cols)
+                transformed_df = pd.concat([transformed_df, pca_df], axis=1)
+                
+                # Calculate residuals for sparse PCA if both were fitted
+                if self.sparse_pca is not None:
+                    reconstructed_data = self.pca.inverse_transform(pca_transformed)
+                    model_residuals = processed_data - reconstructed_data
+                else:
+                    model_residuals = None
+            else:
+                # If no regular PCA, use original data for sparse PCA
+                model_residuals = processed_data
+            
+            # Add sparse PCA components if fitted
+            if self.sparse_pca is not None and model_residuals is not None:
+                # Transform using sparse PCA
                 sparse_transformed = self.sparse_pca.transform(model_residuals)
                 
                 # Create column names for sparse PCA components
@@ -416,8 +471,18 @@ class TrajectoryPCA:
         self.find_common_columns()
         self.concatenate_trajectories()
         self.fit_pca()
-        return self.transform_trajectories()
-
+        self.transform_trajectories()  # Don't capture the return value yet
+        self.normalize_component_signs()  # Modify the transformed data
+        
+        # After normalization, collect the transformed data to return
+        transformed_data = {}
+        for model_size in self.model_sizes:
+            transformed_key = f"{model_size}_transformed"
+            if transformed_key in self.trajectory_data:
+                transformed_data[model_size] = self.trajectory_data[transformed_key]
+        
+        return transformed_data
+    
     def get_sparse_component_sparsity(self):
         """
         Calculate the sparsity of each sparse PCA component.
@@ -474,6 +539,156 @@ class TrajectoryPCA:
         explained_variance_ratio = np.array(component_variances) / total_variance
         
         return explained_variance_ratio
+    
+    def normalize_component_signs(self, reference_model=None):
+        """
+        Normalize PCA component signs so the reference model (default: largest) 
+        has positive values at the first step.
+        """
+        # Select reference model (default to last/largest model)
+        if reference_model is None:
+            reference_model = self.model_sizes[-1]
+        
+        # Get transformed data for reference model
+        transformed_key = f"{reference_model}_transformed"
+        if transformed_key not in self.trajectory_data:
+            print("Warning: Reference model not found in transformed data. Skipping sign normalization.")
+            return False
+        
+        reference_data = self.trajectory_data[transformed_key]
+        
+        # Get first step row
+        if 'step' not in reference_data.columns:
+            print("Warning: Step column not found in reference data. Skipping sign normalization.")
+            return False
+            
+        min_step_row = reference_data.loc[reference_data['step'].idxmin()]
+        
+        # Normalize regular PCA components if they exist
+        if self.pca is not None:
+            pc_cols = [col for col in reference_data.columns if col.startswith('PC')]
+            for pc_col in pc_cols:
+                pc_idx = int(pc_col[2:]) - 1  # Extract PC index (0-based)
+                first_step_value = min_step_row[pc_col]
+                
+                # Flip sign if negative
+                if first_step_value < 0:
+                    self.pca.components_[pc_idx] *= -1
+                    for model_size in self.model_sizes:
+                        model_key = f"{model_size}_transformed"
+                        if model_key in self.trajectory_data and pc_col in self.trajectory_data[model_key].columns:
+                            self.trajectory_data[model_key][pc_col] *= -1
+        
+        # Normalize sparse PCA components if they exist
+        if self.sparse_pca is not None:
+            spc_cols = [col for col in reference_data.columns if col.startswith('SPC')]
+            for spc_col in spc_cols:
+                spc_idx = int(spc_col[3:]) - 1
+                first_step_value = min_step_row[spc_col]
+                
+                if first_step_value < 0:
+                    self.sparse_pca.components_[spc_idx] *= -1
+                    for model_size in self.model_sizes:
+                        model_key = f"{model_size}_transformed"
+                        if model_key in self.trajectory_data and spc_col in self.trajectory_data[model_key].columns:
+                            self.trajectory_data[model_key][spc_col] *= -1
+        
+        return True
+    
+    def get_specific_column_loadings(self, columns_of_interest):
+        """
+        Generate a table showing loadings of specific columns on PCs and sparse PCs.
+        
+        Args:
+            columns_of_interest (list): List of column names to include (e.g., "context_0_pos_1")
+        
+        Returns:
+            pd.DataFrame: Table with columns as rows and components as columns
+        """
+        # Initialize the results DataFrame with feature names
+        results = pd.DataFrame(columns_of_interest, columns=['Feature'])
+        results.set_index('Feature', inplace=True)
+        
+        # Process regular PCA components
+        if self.pca is not None:
+            feature_names = self.common_columns
+            
+            # Add PC loadings for each feature
+            for i in range(self.pca.components_.shape[0]):
+                pc_col = f"PC{i+1}"
+                
+                # Get loadings for this component
+                pc_loadings = {}
+                for feature in columns_of_interest:
+                    if feature in feature_names:
+                        feature_idx = feature_names.index(feature)
+                        pc_loadings[feature] = self.pca.components_[i, feature_idx]
+                
+                # Add to results
+                results[pc_col] = pd.Series(pc_loadings)
+        
+        # Process sparse PCA components if available
+        if self.sparse_pca is not None:
+            feature_names = self.common_columns
+            
+            # Add sparse PC loadings for each feature
+            for i in range(self.sparse_pca.components_.shape[0]):
+                spc_col = f"SPC{i+1}"
+                
+                # Get loadings for this component
+                spc_loadings = {}
+                for feature in columns_of_interest:
+                    if feature in feature_names:
+                        feature_idx = feature_names.index(feature)
+                        spc_loadings[feature] = self.sparse_pca.components_[i, feature_idx]
+                
+                # Add to results
+                results[spc_col] = pd.Series(spc_loadings)
+        
+        # Reset index to make Feature a regular column
+        results.reset_index(inplace=True)
+        
+        return results
+    
+    def compute_cosine_with_spc(self, columns_of_interest, pc_idx=('sparse', 6)):
+        """
+        Compute the cosine similarity between the sum of one-hot vectors for specified columns 
+        and a specific sparse principal component.
+        
+        Args:
+            columns_of_interest (list): List of column names to include
+            spc_index (int): Index of the sparse PC to compare with (default: 6)
+            
+        Returns:
+            float: Cosine similarity score
+        """
+        from scipy.spatial.distance import cosine
+        import numpy as np
+
+        # Get all feature names
+        feature_names = self.common_columns
+        
+        # Create one-hot vector for each column (1 at the column's position, 0 elsewhere)
+        token_vector = np.zeros(len(feature_names))
+        
+        # Set 1 for each column of interest
+        for col in columns_of_interest:
+            if col in feature_names:
+                idx = feature_names.index(col)
+                token_vector[idx] = 1
+        
+        # Get the sparse PC vector (0-indexed, so SPC6 is at index 5)
+        if pc_idx[0] == 'sparse':
+            spc_index = pc_idx[1]
+            vector = self.sparse_pca.components_[spc_index-1]
+        elif idx[0] == 'pca':
+            pc_index = pc_idx[1]
+            vector = self.pca.components_[pc_index-1]
+        
+        # Compute cosine similarity (1 - cosine distance)
+        similarity = 1 - cosine(token_vector, vector)
+        
+        return similarity
 
 # Helper function to get colors from viridis colormap
 def get_viridis_colors(n):
@@ -518,6 +733,43 @@ class TrajectoryPlotter:
         self.model_colors = {}
         for i, model in enumerate(self.model_order):
             self.model_colors[model] = colors[i]
+
+    def format_step_number(self, step):
+        """Format step number to show 'k' for thousands"""
+        if step is None:
+            return "None"
+        elif step >= 1000:
+            return f"{step/1000:.0f}k" if step % 1000 == 0 else f"{step/1000:.0f}k"
+        else:
+            return str(step)
+
+
+    def _get_filename(self, base_plotting_path = "/Users/liam/quests/lsoc-psych/datasets/plotting/joint_pca"):
+        """
+        Generate a filename based on the dataset name and PCA parameters.
+        """
+        dataset_name = self.pca_handler.dataset_name
+        n_components = self.pca_handler.n_components
+        n_sparse_components = self.pca_handler.n_sparse_components
+        
+        # Format the step range
+        min_step = self.format_step_number(self.pca_handler.min_step)
+        max_step = self.format_step_number(self.pca_handler.max_step)
+        step_range_str = f"steps[{min_step}-{max_step}]"
+        
+        # Rest of the method remains the same
+        sparse_params_str = ""
+        if self.pca_handler.sparse_pca_params:
+            params = []
+            for key, value in self.pca_handler.sparse_pca_params.items():
+                params.append(f"{key}={value}")
+            if params:
+                sparse_params_str = f", {', '.join(params)}"
+
+        filename = f"{dataset_name}_PC{n_components}_SPC{n_sparse_components}_{step_range_str}{sparse_params_str}"
+        path = os.path.join(base_plotting_path, filename)
+        
+        return path
     
     def _get_model_size_order(self):
         """
@@ -570,7 +822,7 @@ class TrajectoryPlotter:
         """
         # Check if PCA has been fitted
         if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
+            raise ValueError("Regular PCA not fitted. Cannot plot PCA components.")
         
         # Construct column names for the PCA components
         col_x = f"PC{pc_x}"
@@ -639,739 +891,331 @@ class TrajectoryPlotter:
         
         return fig
     
-    def plot_multiple_pca_components_vs_step(self,
-                                       title: str = "PCA Components vs Training Steps",
-                                       width: int = 900,
-                                       height_per_component: int = 250,
-                                       show_legend: bool = True,
-                                       line_width: int = 2,
-                                       markers: bool = False,
-                                       marker_size: int = 6,
-                                       min_step=0,
-                                       shared_xaxis: bool = False):
+    def plot_pcs_over_time(self):
         """
-        Plot multiple PCA components and sparse PCA components against training steps as vertically stacked subplots.
+        Plot PCA components vs training steps in a 2x5 grid layout.
         
-        Args:
-            num_pca_components (int): Number of regular PCA components to plot (starting from PC1)
-            num_sparse_components (int): Number of sparse PCA components to plot (starting from SPC1)
-            title (str): Overall plot title
-            width (int): Plot width in pixels
-            height_per_component (int): Height per component subplot in pixels
-            show_legend (bool): Whether to show the legend
-            line_width (int): Width of trajectory lines
-            markers (bool): Whether to show markers
-            marker_size (int): Size of markers if shown
-            min_step: Minimum step to include in the plot
-            shared_xaxis (bool): Whether to share x-axis across subplots
-            
         Returns:
-            plotly.graph_objects.Figure: Plotly figure with subplots
+            plotly.graph_objects.Figure: Plotly figure with grid subplots
         """
-        # Check if PCA has been fitted
-        if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
-            
-        # Limit number of regular PCA components to what's available
-        num_pca_components = self.pca_handler.pca.n_components_
-
-        # Get explained variance for regular PCA components
-        pca_explained_var = self.pca_handler.pca.explained_variance_ratio_
-        pc_titles = [f"PC{i+1} (E.V. {pca_explained_var[i]*100:.2f}%)" for i in range(num_pca_components)]
+        # Set fixed parameters
+        width = 1300
+        height = 1200
+        line_width = 2
         
-        # Handle sparse PCA components if available
+        # Initialize variables for component titles
+        pc_titles = []
+        spc_titles = []
+        num_pca_components = 0
+        num_sparse_components = 0
+        
+        # Get regular PCA components info if available
+        if self.pca_handler.pca is not None:
+            num_pca_components = min(self.pca_handler.pca.n_components_, 10)
+            pca_explained_var = self.pca_handler.pca.explained_variance_ratio_
+            pc_titles = [f"PC{i+1} (EV: {pca_explained_var[i]*100:.2f}%)" for i in range(num_pca_components)]
+        
+        # Get sparse PCA components info if available
+        has_sparse = False
         if self.pca_handler.sparse_pca is not None:
-            num_sparse_components = self.pca_handler.sparse_pca.n_components_
+            has_sparse = True
+            # If no regular PC components, we can use all 10 slots for sparse components
+            max_sparse_slots = 10 - num_pca_components
+            num_sparse_components = min(self.pca_handler.sparse_pca.n_components_, max_sparse_slots)
             
             # Get sparsity for sparse components
             if hasattr(self.pca_handler, 'get_sparse_component_sparsity'):
                 sparse_sparsity = self.pca_handler.get_sparse_component_sparsity()
                 sparse_explained_variance = self.pca_handler.get_sparse_component_variance()
-                spc_titles = [f"SPC{i+1} (Sparsity: {sparse_sparsity[i]*100:.2f}%, E.V. {sparse_explained_variance[i]*100:.2f}%)" for i in range(num_sparse_components)]
+                
+                # Data source label
+                data_source = "REV" if self.pca_handler.pca is not None else "EV"
+                
+                if sparse_explained_variance is not None:
+                    spc_titles = [
+                        f"SPC{i+1} ({data_source}: {sparse_explained_variance[i]*100:.2f}%, Sparsity: {sparse_sparsity[i]*100:.2f}%)" 
+                        for i in range(num_sparse_components)
+                    ]
+                else:
+                    spc_titles = [
+                        f"SPC{i+1} (Sparsity: {sparse_sparsity[i]*100:.2f}%)" 
+                        for i in range(num_sparse_components)
+                    ]
             else:
                 # Fallback if sparsity info not available
                 spc_titles = [f"SPC{i+1}" for i in range(num_sparse_components)]
-        else:
-            num_sparse_components = 0
-            spc_titles = []
         
-        # Calculate total number of components to plot
-        total_components = num_pca_components + num_sparse_components
-        subplot_titles = pc_titles + spc_titles
+        # Auto-generate title
+        dataset_name = self.pca_handler.dataset_name or "Unknown"
+        n_components = self.pca_handler.n_components
+        n_sparse_components = self.pca_handler.n_sparse_components
+        
+        # Check for non-default sparse PCA params
+        sparse_params_str = ""
+        if self.pca_handler.sparse_pca_params:
+            params = []
+            for key, value in self.pca_handler.sparse_pca_params.items():
+                params.append(f"{key}={value}")
+            if params:
+                sparse_params_str = f", {', '.join(params)}"
+        
+        min_step = self.format_step_number(self.pca_handler.min_step)
+        max_step = self.format_step_number(self.pca_handler.max_step)
+        step_range_str = f"steps [{min_step}-{max_step}]"
 
-        # Subset steps by min_step
-        for model_size in self.model_order:
-            transformed_key = f"{model_size}_transformed"
-            if transformed_key not in self.pca_handler.trajectory_data:
-                continue
-            df = self.pca_handler.trajectory_data[transformed_key]
-            df = df[df['step'] >= min_step]
-            self.pca_handler.trajectory_data[transformed_key] = df
-        
-        # Calculate total height
-        total_height = height_per_component * total_components
-        
-        # Create a subplot structure
-        fig = go.Figure()
-        
-        fig = make_subplots(
-            rows=total_components,
-            cols=1,
-            shared_xaxes=shared_xaxis,
-            vertical_spacing=0.05,
-            subplot_titles=subplot_titles
-        )
-        
-        # Add traces for each regular PCA component and model size
-        for pc_idx in range(num_pca_components):
-            pc = pc_idx + 1  # 1-based PC numbering
-            col_pc = f"PC{pc}"
-            
-            for model_size in self.model_order:
-                # Get transformed data
-                transformed_key = f"{model_size}_transformed"
-                if transformed_key not in self.pca_handler.trajectory_data:
-                    continue
-                    
-                df = self.pca_handler.trajectory_data[transformed_key]
-                
-                # Check if required columns exist
-                if col_pc not in df.columns or 'step' not in df.columns:
-                    continue
-                
-                # Create hover text
-                hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_pc}: {val:.4f}" 
-                            for step, val in zip(df['step'], df[col_pc])]
-                
-                # Add trace for this model and component
-                marker_dict = dict(size=marker_size) if markers else dict(size=0)
-                
-                fig.add_trace(
-                    go.Scatter(
-                        x=df['step'], 
-                        y=df[col_pc],
-                        mode='lines+markers' if markers else 'lines',
-                        name=f"Model {model_size}",
-                        line=dict(color=self.model_colors[model_size], width=line_width),
-                        marker=marker_dict,
-                        text=hover_text,
-                        hoverinfo='text',
-                        showlegend=True if pc_idx == 0 else False  # Only show legend once
-                    ),
-                    row=pc_idx+1, 
-                    col=1
-                )
-                fig.update_yaxes(title_text=f"PC{pc}", row=pc_idx+1, col=1)
-        
-        # Add traces for each sparse PCA component and model size
-        for spc_idx in range(num_sparse_components):
-            spc = spc_idx + 1  # 1-based SPC numbering
-            col_spc = f"SPC{spc}"
-            plot_row = num_pca_components + spc_idx + 1  # Plot after regular PCs
-            
-            for model_size in self.model_order:
-                # Get transformed data
-                transformed_key = f"{model_size}_transformed"
-                if transformed_key not in self.pca_handler.trajectory_data:
-                    continue
-                    
-                df = self.pca_handler.trajectory_data[transformed_key]
-                
-                # Check if required columns exist
-                if col_spc not in df.columns or 'step' not in df.columns:
-                    continue
-                
-                # Create hover text
-                hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_spc}: {val:.4f}" 
-                            for step, val in zip(df['step'], df[col_spc])]
-                
-                # Add trace for this model and component
-                marker_dict = dict(size=marker_size) if markers else dict(size=0)
-                
-                fig.add_trace(
-                    go.Scatter(
-                        x=df['step'], 
-                        y=df[col_spc],
-                        mode='lines+markers' if markers else 'lines',
-                        name=f"Model {model_size}",
-                        line=dict(color=self.model_colors[model_size], width=line_width),
-                        marker=marker_dict,
-                        text=hover_text,
-                        hoverinfo='text',
-                        showlegend=False  # No need to show legend again for sparse components
-                    ),
-                    row=plot_row, 
-                    col=1
-                )
-                fig.update_yaxes(title_text=f"SPC{spc}", row=plot_row, col=1)
-        
-        # Update layout
-        fig.update_layout(
-            title=title,
-            width=width,
-            height=total_height,
-            template='plotly_white',
-            showlegend=show_legend,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.01,
-                xanchor="right",
-                x=1
-            ),
-            margin=dict(l=20, r=20, t=150, b=20)
-        )
+        title = f"PCA on {dataset_name} - {n_components} PCs, {n_sparse_components} SPCs ({step_range_str}{sparse_params_str}, num_contexts={self.pca_handler.num_contexts})"
 
-
-        # Update x-axis titles (only for the bottom subplot if shared)
-        if shared_xaxis:
-            fig.update_xaxes(title="Training Steps", row=total_components, col=1)
-        else:
-            for i in range(total_components):
-                fig.update_xaxes(title="Training Steps", row=i+1, col=1)
+        # Calculate total components to plot (max 10)
+        total_components = min(num_pca_components + num_sparse_components, 10)
         
-        # Add grid to all subplots
-        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray', type='log')
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+        # Check if we have any components to plot
+        if total_components == 0:
+            raise ValueError("No PCA or sparse PCA components available to plot.")
         
-        return fig
-    
-    def plot_pca_component_vs_step(self, 
-                                  pc: int = 1, 
-                                  title: str = None,
-                                  width: int = 900, 
-                                  height: int = 600,
-                                  show_legend: bool = True,
-                                  line_width: int = 2,
-                                  markers: bool = False,
-                                  marker_size: int = 6):
-        """
-        Plot a PCA component against training steps.
-        
-        Args:
-            pc (int): PCA component number (1-based)
-            title (str, optional): Plot title
-            width (int): Plot width in pixels
-            height (int): Plot height in pixels
-            show_legend (bool): Whether to show the legend
-            line_width (int): Width of trajectory lines
-            markers (bool): Whether to show markers
-            marker_size (int): Size of markers if shown
-            
-        Returns:
-            plotly.graph_objects.Figure: Plotly figure
-        """
-        # Check if PCA has been fitted
-        if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
-        
-        # Construct column name for the PCA component
-        col_pc = f"PC{pc}"
-        
-        # Create a figure
-        fig = go.Figure()
-        
-        # Add traces for each model size
-        for model_size in self.model_order:
-            # Get transformed data
-            transformed_key = f"{model_size}_transformed"
-            if transformed_key not in self.pca_handler.trajectory_data:
-                continue
-                
-            df = self.pca_handler.trajectory_data[transformed_key]
-            
-            # Check if required columns exist
-            if col_pc not in df.columns or 'step' not in df.columns:
-                continue
-            
-            # Add trace for this model
-            marker_dict = dict(size=marker_size) if markers else dict(size=0)
-            
-            fig.add_trace(go.Scatter(
-                x=df['step'], 
-                y=df[col_pc],
-                mode='lines+markers' if markers else 'lines',
-                name=f"Model {model_size}",
-                line=dict(color=self.model_colors[model_size], width=line_width),
-                marker=marker_dict
-            ))
-        
-        # Update layout
-        if title is None:
-            title = f"PCA Component {pc} vs Training Steps"
-            
-        fig.update_layout(
-            title=title,
-            xaxis_title="Training Steps",
-            yaxis_title=f"Principal Component {pc}",
-            width=width,
-            height=height,
-            showlegend=show_legend,
-            template='plotly_white',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        # Add grid
-        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray', type='log')
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-        
-        return fig
-    
-    def plot_explained_variance(self, 
-                               n_components: int = None,
-                               width: int = 900, 
-                               height: int = 600,
-                               title: str = "PCA Explained Variance"):
-        """
-        Plot the explained variance for PCA components using Plotly.
-        
-        Args:
-            n_components (int, optional): Number of components to display
-            width (int): Plot width in pixels
-            height (int): Plot height in pixels
-            title (str): Plot title
-            
-        Returns:
-            plotly.graph_objects.Figure: Plotly figure
-        """
-        # Check if PCA has been fitted
-        if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
-        
-        # Get explained variance
-        explained_var = self.pca_handler.pca.explained_variance_ratio_
-        
-        # Set number of components to display
-        if n_components is None:
-            n_components = len(explained_var)
-        else:
-            n_components = min(n_components, len(explained_var))
-            
-        explained_var = explained_var[:n_components]
-        cumulative_var = np.cumsum(explained_var)
-        component_indices = np.arange(1, n_components + 1)
-        
-        # Create figure with secondary y-axis
-        fig = go.Figure()
-        
-        # Add individual explained variance as bars
-        fig.add_trace(go.Bar(
-            x=component_indices,
-            y=explained_var,
-            name="Individual",
-            marker_color="royalblue",
-            opacity=0.7
-        ))
-        
-        # Add cumulative explained variance as line
-        fig.add_trace(go.Scatter(
-            x=component_indices,
-            y=cumulative_var,
-            name="Cumulative",
-            mode="lines+markers",
-            marker=dict(size=8, color="firebrick"),
-            line=dict(width=2, color="firebrick"),
-            yaxis="y2"
-        ))
-        
-        # Add 90% threshold line
-        fig.add_trace(go.Scatter(
-            x=component_indices,
-            y=[0.9] * n_components,
-            name="90% Explained",
-            mode="lines",
-            line=dict(width=2, color="green", dash="dash"),
-            yaxis="y2"
-        ))
-        
-        # Update layout
-        fig.update_layout(
-            title=title,
-            xaxis=dict(
-                title="Principal Component",
-                tickmode="linear",
-                tick0=1,
-                dtick=1
-            ),
-            yaxis=dict(
-                title="Explained Variance Ratio",
-                range=[0, max(explained_var) * 1.1],
-                side="left"
-            ),
-            yaxis2=dict(
-                title="Cumulative Explained Variance",
-                range=[0, 1],
-                side="right",
-                overlaying="y",
-                tickmode="linear",
-                tick0=0,
-                dtick=0.1
-            ),
-            width=width,
-            height=height,
-            template="plotly_white",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            hovermode="x unified"
-        )
-        
-        # Add grid
-        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-        
-        return fig
-    
-    def plot_3d_pca_components(self,
-                              pc_x: int = 1,
-                              pc_y: int = 2, 
-                              pc_z: int = 3,
-                              title: str = None,
-                              width: int = 900,
-                              height: int = 700,
-                              line_width: int = 3,
-                              markers: bool = True,
-                              marker_size: int = 4):
-        """
-        Plot three PCA components in 3D using Plotly.
-        
-        Args:
-            pc_x (int): PCA component number for x-axis (1-based)
-            pc_y (int): PCA component number for y-axis (1-based)
-            pc_z (int): PCA component number for z-axis (1-based)
-            title (str, optional): Plot title
-            width (int): Plot width in pixels
-            height (int): Plot height in pixels
-            line_width (int): Width of trajectory lines
-            markers (bool): Whether to show markers
-            marker_size (int): Size of markers if shown
-            
-        Returns:
-            plotly.graph_objects.Figure: Plotly figure
-        """
-        # Check if PCA has been fitted
-        if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
-        
-        # Construct column names for the PCA components
-        col_x = f"PC{pc_x}"
-        col_y = f"PC{pc_y}"
-        col_z = f"PC{pc_z}"
-        
-        # Create a figure
-        fig = go.Figure()
-        
-        # Add traces for each model size
-        for model_size in self.model_order:
-            # Get transformed data
-            transformed_key = f"{model_size}_transformed"
-            if transformed_key not in self.pca_handler.trajectory_data:
-                continue
-                
-            df = self.pca_handler.trajectory_data[transformed_key]
-            
-            # Check if required columns exist
-            if col_x not in df.columns or col_y not in df.columns or col_z not in df.columns:
-                continue
-            
-            # Add trace for this model
-            marker_dict = dict(size=marker_size) if markers else dict(size=0)
-            
-            fig.add_trace(go.Scatter3d(
-                x=df[col_x], 
-                y=df[col_y],
-                z=df[col_z],
-                mode='lines+markers' if markers else 'lines',
-                name=f"Model {model_size}",
-                line=dict(color=self.model_colors[model_size], width=line_width),
-                marker=marker_dict
-            ))
-        
-        # Update layout
-        if title is None:
-            title = f"PCA Components {pc_x} vs {pc_y} vs {pc_z}"
-            
-        fig.update_layout(
-            title=title,
-            scene=dict(
-                xaxis_title=f"Principal Component {pc_x}",
-                yaxis_title=f"Principal Component {pc_y}",
-                zaxis_title=f"Principal Component {pc_z}",
-            ),
-            width=width,
-            height=height,
-            template='plotly_white'
-        )
-        
-        return fig
-
-    def plot_raw_trajectory_heatmap(self,
-                            token_mapping,
-                            colorscale="Viridis",
-                            title="Raw Trajectory Data Heatmap with Tokens",
-                            width=1200,
-                            height=None,
-                            subplot_height=300,
-                            shared_colorscale=True,
-                            log_scale=False,
-                            max_columns=100,
-                            min_steps=0,
-                            max_color=10):
-        """
-        Plot heatmaps of the raw trajectory data with token information in hover text.
-        
-        Args:
-            token_mapping (dict): Dictionary mapping column names to token values
-            colorscale (str): Color scale for the heatmap (e.g., "Viridis", "Reds")
-            title (str): Overall plot title
-            width (int): Width of the figure in pixels
-            height (int): Total height of the figure in pixels (if None, calculated based on model count)
-            subplot_height (int): Height for each subplot in pixels
-            shared_colorscale (bool): Whether to use the same color scale range for all models
-            log_scale (bool): Whether to use log scaling for the color values
-            max_columns (int): Maximum number of columns to display (to prevent overcrowding)
-            min_steps (int/float): Minimum step threshold to include in the visualization
-            max_color (float): Maximum value for color scale capping
-            
-        Returns:
-            plotly.graph_objects.Figure: Plotly figure with token hover information
-        """
-        
-        # Check if we have trajectory data
-        if not self.model_order:
-            raise ValueError("No model data available")
-            
-        # Access the original (not transformed) trajectory data
-        trajectory_data = self.pca_handler.trajectory_data
-        
-        # Determine number of models and calculate total height if not specified
-        n_models = len(self.model_order)
-        if height is None:
-            height = subplot_height * n_models
-            
-        # Create subplot structure
-        fig = make_subplots(
-            rows=n_models,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.01,
-            subplot_titles=[f"Model: {model_size}" for model_size in self.model_order]
-        )
-        
-        # Find global min and max values if using shared colorscale
-        global_min, global_max = None, None
-        if shared_colorscale:
-            all_values = []
-            for model_size in self.model_order:
-                if model_size not in trajectory_data:
-                    continue
-                    
-                df = trajectory_data[model_size]
-                
-                # Filter steps based on threshold
-                step_mask = df['step'] > min_steps
-                if not any(step_mask):
-                    print(f"Warning: No steps above {min_steps} for model {model_size}")
-                    continue
-                    
-                value_cols = [col for col in df.columns if col != 'step']
-                
-                # Limit columns if there are too many
-                if len(value_cols) > max_columns:
-                    value_cols = value_cols[:max_columns]
-                    
-                # Filter data by steps
-                filtered_data = df.loc[step_mask, value_cols].values
-                    
-                # For numerical stability with log scale
-                if log_scale:
-                    # Add a small positive value to zeros before taking log
-                    data_array = filtered_data.copy()
-                    data_array[data_array <= 0] = 1e-10  # Avoid log(0)
-                    data_array = np.log10(data_array)
+        # Re-arrange subplot titles to follow proper order (row by row)
+        subplot_titles = []
+        for i in range(5):  # 5 rows
+            for j in range(2):  # 2 columns
+                idx = i + j * 5
+                if idx < len(pc_titles + spc_titles):
+                    combined_titles = pc_titles + spc_titles
+                    subplot_titles.append(combined_titles[idx])
                 else:
-                    data_array = filtered_data
-                    
-                all_values.extend(data_array.flatten())
-            
-            if all_values:
-                global_min, global_max = np.nanmin(all_values), np.nanmax(all_values)
+                    subplot_titles.append("")
         
-        # Create a heatmap for each model
-        for i, model_size in enumerate(self.model_order):
-            if model_size not in trajectory_data:
-                continue
+        # Create subplot layout
+        fig = make_subplots(
+            rows=5,
+            cols=2,
+            subplot_titles=subplot_titles,
+            vertical_spacing=0.06,
+            horizontal_spacing=0.08
+        )
+        
+        # Helper function to get row, col from component index (0-based)
+        def get_subplot_position(idx):
+            # For a 2x5 grid, ordering goes row by row
+            row = (idx % 5) + 1   # Remainder gives row (0-4, then add 1)
+            col = (idx // 5) + 1  # Integer division gives column (0 or 1, then add 1)
+            return row, col
+        
+        # Add traces for regular PCA components if they exist
+        if self.pca_handler.pca is not None:
+            for pc_idx in range(num_pca_components):
+                pc = pc_idx + 1  # 1-based PC numbering
+                col_pc = f"PC{pc}"
+                row, col = get_subplot_position(pc_idx)
                 
-            # Get the data
-            df = trajectory_data[model_size]
-            
-            # Filter steps based on threshold
-            step_mask = df['step'] > min_steps
-            if not any(step_mask):
-                print(f"Warning: No steps above {min_steps} for model {model_size}")
-                continue
-                
-            # Get steps for y-axis (rows) and token columns for x-axis
-            filtered_steps = df.loc[step_mask, 'step'].values
-            value_cols = [col for col in df.columns if col != 'step']
-            
-            # Limit columns if there are too many
-            if len(value_cols) > max_columns:
-                print(f"Limiting display to {max_columns} columns out of {len(value_cols)} for model {model_size}")
-                value_cols = value_cols[:max_columns]
-            
-            # Create column display names with token preview
-            col_display_names = []
-            for col_idx, col_name in enumerate(value_cols):
-                # Get token text if available in the mapping
-                token_text = token_mapping.get(col_name, "")
-                # Create a short preview for display (first 8 chars)
-                short_token = token_text[:8] + '...' if len(token_text) > 8 else token_text
-                # Strip newlines for display
-                short_token = short_token.replace('\n', '\\n')
-                col_display_names.append(f"T{col_idx}: {short_token}")
-            
-            # Get the filtered data
-            filtered_data = df.loc[step_mask, value_cols].values
-            
-            # Apply log scaling if requested
-            if log_scale and np.any(filtered_data > 0):
-                # Add a small positive value to zeros before taking log
-                data_array = filtered_data.copy()
-                data_array[data_array <= 0] = 1e-10  # Avoid log(0)
-                data_array = np.log10(data_array)
-                z_title = "Loss (Log10)"
-            else:
-                data_array = filtered_data
-                z_title = "Value"
-            
-            # Set color scale range
-            colorscale_args = {}
-            if shared_colorscale and global_min is not None and global_max is not None:
-                zmax = global_max if global_max < max_color else max_color
-                colorscale_args = dict(zmin=global_min, zmax=zmax)
-            
-            # Create custom hover text with token information
-            hover_text = []
-            for step_idx, step in enumerate(filtered_steps):
-                step_hover = []
-                for col_idx, col_name in enumerate(value_cols):
-                    # Get the value
-                    value = data_array[step_idx, col_idx]
+                for model_size in self.model_order:
+                    # Get transformed data
+                    transformed_key = f"{model_size}_transformed"
+                    if transformed_key not in self.pca_handler.trajectory_data:
+                        continue
+                        
+                    df = self.pca_handler.trajectory_data[transformed_key]
                     
-                    # Get token text if available in the mapping
-                    # print(col_name)
-                    # print(token_mapping[col_name])
-                    token_text = token_mapping.get(col_name, "Unknown")
-                    # Handle potential newlines in tokens for hover display
-                    token_text = token_text.replace('\n', '\\n')
+                    # Check if required columns exist
+                    if col_pc not in df.columns or 'step' not in df.columns:
+                        continue
                     
                     # Create hover text
-                    text = (
-                        f"Step: {step}<br>"
-                        f"Column: {col_name}<br>"
-                        f"Loss: {10**value:.4f}<br>"
-                        f"Token: '{token_text}'"
+                    hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_pc}: {val:.4f}" 
+                                for step, val in zip(df['step'], df[col_pc])]
+                    
+                    # Add trace for this model and component
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df['step'], 
+                            y=df[col_pc],
+                            mode='lines',
+                            name=f"Pythia {model_size}",
+                            line=dict(color=self.model_colors[model_size], width=line_width),
+                            text=hover_text,
+                            hoverinfo='text',
+                            showlegend=True if pc_idx == 0 else False  # Only show legend for first component
+                        ),
+                        row=row, 
+                        col=col
                     )
-                    step_hover.append(text)
-                hover_text.append(step_hover)
+        
+        # Add traces for sparse PCA components if available
+        if has_sparse:
+            for spc_idx in range(num_sparse_components):
+                spc = spc_idx + 1  # 1-based SPC numbering
+                col_spc = f"SPC{spc}"
+                
+                # Calculate position in grid
+                plot_idx = num_pca_components + spc_idx
+                row, col = get_subplot_position(plot_idx)
+                
+                for model_size in self.model_order:
+                    # Get transformed data
+                    transformed_key = f"{model_size}_transformed"
+                    if transformed_key not in self.pca_handler.trajectory_data:
+                        continue
+                        
+                    df = self.pca_handler.trajectory_data[transformed_key]
+                    
+                    # Check if required columns exist
+                    if col_spc not in df.columns or 'step' not in df.columns:
+                        continue
+                    
+                    # Create hover text
+                    hover_text = [f"Model: {model_size}<br>Step: {step}<br>{col_spc}: {val:.4f}" 
+                                for step, val in zip(df['step'], df[col_spc])]
+                    
+                    # Add trace for this model and component
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df['step'], 
+                            y=df[col_spc],
+                            mode='lines',
+                            name=f"Pythia {model_size}",
+                            line=dict(color=self.model_colors[model_size], width=line_width),
+                            text=hover_text,
+                            hoverinfo='text',
+                            # Only show legend for the first component and only if there are no regular PCs
+                            showlegend=True if spc_idx == 0 and num_pca_components == 0 else False
+                        ),
+                        row=row, 
+                        col=col
+                    )
+        
+        # Add axis lines and labels for each subplot
+        for i in range(total_components):
+            row, col = get_subplot_position(i)
+            component_idx = i
             
-            # Add heatmap for this model
-            fig.add_trace(
-                go.Heatmap(
-                    z=data_array,  # steps as rows (y), tokens as columns (x)
-                    x=col_display_names,  # token columns with preview
-                    y=filtered_steps,  # filtered training steps
-                    colorscale=colorscale,
-                    colorbar=dict(
-                        title=z_title,
-                        # Only show the colorbar for the last model or if not shared
-                        showticklabels=(i == n_models-1) if shared_colorscale else True,
-                    ),
-                    showscale=(i == n_models-1) if shared_colorscale else True,
-                    hoverinfo="text",
-                    text=hover_text,
-                    **colorscale_args
-                ),
-                row=i+1,
-                col=1
+            # Determine if this is a PC or SPC
+            if component_idx < num_pca_components:
+                y_title = f"PC{component_idx+1}"
+            else:
+                y_title = f"SPC{component_idx-num_pca_components+1}"
+            
+            # Add borders to plot
+            fig.update_xaxes(
+                showline=True,
+                linewidth=1,
+                linecolor='black',
+                mirror=True,
+                showticklabels=True,  # Always show x-axis ticks
+                row=row,
+                col=col,
+                # range=[self.pca_handler.step_range[0], self.pca_handler.step_range[1]]
             )
             
-            # Customize layout for this subplot
-            fig.update_yaxes(title="Training Steps", row=i+1, col=1, type='log')
+            # Add the "Training Steps" title only to the bottom plots
+            if row == 5:
+                fig.update_xaxes(title="Training Steps", row=row, col=col)
+            
+            # Add y-axis title for all plots
+            fig.update_yaxes(
+                title=y_title,
+                showline=True,
+                title_standoff=5,
+                linewidth=1,
+                linecolor='black',
+                mirror=True,
+                row=row,
+                col=col
+            )
         
-        # Set x-axis title only for the bottom subplot
-        fig.update_xaxes(title="Token Features", row=n_models, col=1)
-        
-        # Update overall layout
+        # Update layout
         fig.update_layout(
-            title=title,
+            title=dict(
+                text=title,
+                x=0.5,  # Center the title
+                y=0.99,
+                font=dict(
+                    family="Arial",
+                    size=18,
+                )
+            ),
             width=width,
             height=height,
-            template="plotly_white",
-            margin=dict(l=20, r=20, t=80, b=20)
+            template='plotly_white',
+            showlegend=True,
+            legend=dict(
+                orientation="h",  # horizontal orientation
+                yanchor="top",
+                y=1.06,  # Position at the top
+                xanchor="center",
+                x=0.5  # Position to the right of the plots
+            ),
+            margin=dict(l=60, r=80, t=100, b=20)  # Increased bottom margin for legend
         )
+        
+        # Update all x-axes to log scale
+        fig.update_xaxes(type='log', showgrid=True, gridwidth=1, gridcolor='LightGray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
         
         return fig
     
-    def plot_top_loading_columns(self,
-                              pc_index: int = 1,
-                              num_columns: int = 10,
-                              title: str = None,
-                              width: int = 1200,
-                              height_per_subplot: int = 200,
-                              show_legend: bool = True,
-                              line_width: int = 2,
-                              markers: bool = False,
-                              marker_size: int = 6,
-                              min_step=0,
-                              token_mapping=None,
-                              shared_yaxis: bool = False,
-                              log_step_axis: bool = True):
+    def plot_top_loaded_features_for_component(self, component: int, token_mapping=None):
         """
-        Plot trajectories of top loading columns from a specific principal component.
+        Plot the top 10 loaded features for a specific principal component.
         
         Args:
-            pc_index (int): Principal component index (1-based)
-            num_columns (int): Number of top loading columns to plot
-            title (str, optional): Overall plot title
-            width (int): Plot width in pixels
-            height_per_subplot (int): Height per subplot in pixels
-            show_legend (bool): Whether to show the legend
-            line_width (int): Width of trajectory lines
-            markers (bool): Whether to show markers
-            marker_size (int): Size of markers if shown
-            min_step (int): Minimum step to include in the plot
+            component_idx (int): Index of the component (0-based, counts through regular PCs then sparse PCs)
             token_mapping (dict, optional): Dictionary mapping column names to token values
-            shared_yaxis (bool): Whether to use the same y-axis scale for all subplots
-            log_step_axis (bool): Whether to use log scale for the step axis
             
         Returns:
-            plotly.graph_objects.Figure: Plotly figure with subplots for top loading columns
+            plotly.graph_objects.Figure: Plotly figure
         """
-        # Check if PCA has been fitted
-        if self.pca_handler.pca is None:
-            raise ValueError("PCA not fitted yet. Call pca_handler.fit_pca() first.")
+        # Fixed values
+        width = 1300
+        height = 1200
+        line_width = 2
+        min_step = 0
+        num_features = 10
+
+        component_idx = component - 1  # Convert to 0-based indexing
         
-        # Get PCA loadings for the specified component
-        pc_idx = pc_index - 1  # Convert to 0-based indexing
-        if pc_idx >= self.pca_handler.pca.components_.shape[0]:
-            raise ValueError(f"PC index {pc_index} exceeds available components ({self.pca_handler.pca.components_.shape[0]})")
+        # Determine if this is a regular PC or sparse PC
+        num_pca_components = 0 if self.pca_handler.pca is None else self.pca_handler.pca.n_components_
         
-        # Get the loadings for this component
-        component_loadings = self.pca_handler.pca.components_[pc_idx]
+        if component_idx < num_pca_components and self.pca_handler.pca is not None:
+            # Regular PC
+            is_sparse = False
+            pc_type = "PC"
+            pc_num = component_idx + 1  # Convert to 1-based indexing
+            component_loadings = self.pca_handler.pca.components_[component_idx]
+            explained_var = self.pca_handler.pca.explained_variance_ratio_[component_idx]
+            component_info = f"(EV: {explained_var*100:.2f}%)"
+        else:
+            # Sparse PC
+            if self.pca_handler.sparse_pca is None:
+                raise ValueError("No sparse components available")
+                
+            is_sparse = True
+            pc_type = "SPC"
+            # Adjust index for sparse components
+            sparse_idx = component_idx - num_pca_components
+            pc_num = sparse_idx + 1  # Convert to 1-based indexing for sparse
+            
+            if sparse_idx >= self.pca_handler.sparse_pca.n_components_:
+                raise ValueError(f"Component index {component_idx} exceeds available components")
+                
+            component_loadings = self.pca_handler.sparse_pca.components_[sparse_idx]
+            
+            # Get sparsity if available
+            component_info = ""
+            if hasattr(self.pca_handler, 'get_sparse_component_sparsity'):
+                sparse_sparsity = self.pca_handler.get_sparse_component_sparsity()
+                if sparse_sparsity and sparse_idx < len(sparse_sparsity):
+                    component_info += f"(Sparsity: {sparse_sparsity[sparse_idx]*100:.2f}%"
+                    
+                    # Get variance if available
+                    if hasattr(self.pca_handler, 'get_sparse_component_variance'):
+                        sparse_variance = self.pca_handler.get_sparse_component_variance()
+                        if sparse_variance is not None and sparse_idx < len(sparse_variance):
+                            # Label appropriately depending on whether we're using residuals or original data
+                            variance_label = "REV" if self.pca_handler.pca is not None else "EV"
+                            component_info += f", {variance_label}: {sparse_variance[sparse_idx]*100:.2f}%"
+                            
+                    component_info += ")"
         
-        # Get the feature names (column names)
+        # Get feature names
         feature_names = self.pca_handler.common_columns
         
         # Create a DataFrame with feature names and their loadings
@@ -1385,309 +1229,914 @@ class TrajectoryPlotter:
         loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
         loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
         
-        # Get top N features
-        top_columns = loadings_df.head(num_columns)['Feature'].tolist()
-        top_loadings = loadings_df.head(num_columns)['Loading'].tolist()
+        # Get top 10 features
+        top_n = min(num_features, len(loadings_df))
+        top_features = loadings_df.head(top_n)
         
-        # Set up subplot grid
-        from plotly.subplots import make_subplots
-        import plotly.graph_objects as go
-        
-        # Calculate total height
-        total_height = height_per_subplot * min(num_columns, len(top_columns))
+        # Helper function to extract context from token_mapping
+        def extract_context_from_feature(feature):
+            if not token_mapping or feature not in token_mapping:
+                return ""
+                
+            # Get current token
+            token = token_mapping[feature]
+            
+            # Format current token, handling special characters
+            def format_token_display(token_str, max_len=5):
+                # Handle special characters first
+                formatted = token_str.replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r')
+                
+                # Check if it's mostly whitespace
+                if formatted.strip() == "" and len(formatted) > 2:
+                    return "[whitespace]"
+                    
+                # Truncate if too long
+                if len(formatted) > max_len:
+                    return formatted[:max_len] + "..."
+                    
+                return formatted
+            
+            # Format current token
+            token_text = format_token_display(token, 8)
+            
+            # Try to extract context from the feature name
+            # Format is typically 'context_X_pos_Y'
+            try:
+                parts = feature.split('_pos_')
+                if len(parts) == 2:
+                    context_prefix = parts[0]  # e.g., "context_123"
+                    pos = int(parts[1])  # e.g., 45
+                    
+                    # Try to get previous token
+                    prev_feature = f"{context_prefix}_pos_{pos-1}"
+                    prev_token = ""
+                    if prev_feature in token_mapping:
+                        prev_token = format_token_display(token_mapping[prev_feature], 5)
+                    
+                    # Try to get next token
+                    next_feature = f"{context_prefix}_pos_{pos+1}"
+                    next_token = ""
+                    if next_feature in token_mapping:
+                        next_token = format_token_display(token_mapping[next_feature], 5)
+                    
+                    # Only show context if we have at least one neighboring token
+                    if prev_token or next_token:
+                        return f" [\"{prev_token}\", <b>\"{token_text}\"</b>, \"{next_token}\"]"
+            except:
+                # Fall back to just showing the token
+                pass
+            
+            # If extraction failed or no context available, just show the token
+            return f" \"{token_text}\""
         
         # Create subplot titles with loading values
-        subplot_titles = []
-        for i, (col, loading) in enumerate(zip(top_columns, top_loadings)):
-            # Add token info if available
-            token_info = ""
-            if token_mapping and col in token_mapping:
-                # Format token for display (truncate if too long, handle newlines)
-                token_text = token_mapping[col]
-                token_text = token_text.replace('\n', '\\n')
-                if len(token_text) > 20:
-                    token_text = token_text[:17] + "..."
-                token_info = f" - '{token_text}'"
+
+        def get_subplot_position(idx):
+            # For a 2x5 grid, ordering goes row by row
+            row = (idx % 5) + 1   # Remainder gives row (0-4, then add 1)
+            col = (idx // 5) + 1  # Integer division gives column (0 or 1, then add 1)
+            return row, col
+
+        subplot_titles = [None] * top_n
+        for i, (_, row) in enumerate(top_features.iterrows()):
+            feature = row['Feature']
+            loading = row['Loading']
             
-            subplot_titles.append(f"{col}{token_info} (Loading: {loading:.4f})")
+            # Add token info if available
+            token_info = extract_context_from_feature(feature)
+            
+            # Create title with rank, feature name, and loading
+            title = f"{i+1}. {feature}{token_info} (Loading: {loading:.4f})"
+            
+            # Calculate the position in the subplot_titles list for row-by-row ordering
+            row, col = get_subplot_position(i)
+            subplot_title_list_position = 2*(row-1) + col - 1
+            
+            # Place the title in the correct position
+            subplot_titles[subplot_title_list_position] = title
         
-        # Create subplot layout
         fig = make_subplots(
-            rows=len(top_columns),
-            cols=1,
-            #shared_xaxes=True,
-            shared_yaxes=shared_yaxis,
-            vertical_spacing=0.02,
-            subplot_titles=subplot_titles
+            rows=5,
+            cols=2,
+            subplot_titles=subplot_titles,
+            vertical_spacing=0.06,
+            horizontal_spacing=0.08
         )
         
-        # Dictionary to track y-axis range for each subplot if using shared y-axis
-        y_ranges = {}
+        # Helper function to get row, col from feature index (0-based)
         
-        # Add traces for each feature and model size
-        for i, feature in enumerate(top_columns):
+        
+        # Add traces for each feature and model
+        for i, (_, row) in enumerate(top_features.iterrows()):
+            feature = row['Feature']
+            
+            # Get subplot position
+            subplot_row, subplot_col = get_subplot_position(i)
+            
+            # Add traces for each model size
             for model_size in self.model_order:
-                # Get raw trajectory data
+                # Get data for this model
                 if model_size not in self.pca_handler.trajectory_data:
                     continue
                     
                 df = self.pca_handler.trajectory_data[model_size]
                 
-                # Check if required columns exist
+                # Check if feature exists and filter by min_step
                 if feature not in df.columns or 'step' not in df.columns:
                     continue
-                
-                # Filter by minimum step
-                df = df[df['step'] >= min_step]
+                    
+                filtered_df = df[df['step'] >= min_step]
                 
                 # Create hover text
                 hover_text = [f"Model: {model_size}<br>Step: {step}<br>Value: {val:.6f}" 
-                            for step, val in zip(df['step'], df[feature])]
+                            for step, val in zip(filtered_df['step'], filtered_df[feature])]
                 
-                # Add trace for this model and feature
-                marker_dict = dict(size=marker_size) if markers else dict(size=0)
-                
+                # Add trace
                 fig.add_trace(
                     go.Scatter(
-                        x=df['step'], 
-                        y=df[feature],
-                        mode='lines+markers' if markers else 'lines',
-                        name=f"Model {model_size}",
+                        x=filtered_df['step'], 
+                        y=filtered_df[feature],
+                        mode='lines',
+                        name=f"Pythia {model_size}",
                         line=dict(color=self.model_colors[model_size], width=line_width),
-                        marker=marker_dict,
                         text=hover_text,
                         hoverinfo='text',
-                        showlegend=True if i == 0 else False  # Only show legend once
+                        showlegend=True if i == 0 else False  # Only show legend for first subplot
                     ),
-                    row=i+1, 
-                    col=1
+                    row=subplot_row, 
+                    col=subplot_col
                 )
-                
-                # Track y-axis range for this subplot
-                if shared_yaxis:
-                    if i not in y_ranges:
-                        y_ranges[i] = [float('inf'), float('-inf')]
-                    y_min = min(df[feature])
-                    y_max = max(df[feature])
-                    y_ranges[i][0] = min(y_ranges[i][0], y_min)
-                    y_ranges[i][1] = max(y_ranges[i][1], y_max)
         
-        # Apply shared y-axis ranges if needed
-        if shared_yaxis and y_ranges:
-            global_min = min([r[0] for r in y_ranges.values()])
-            global_max = max([r[1] for r in y_ranges.values()])
-            for i in range(len(top_columns)):
-                fig.update_yaxes(range=[global_min, global_max], row=i+1, col=1)
+        # Generate title
+        dataset_name = self.pca_handler.dataset_name or "Dataset"
+        data_source = "Original Data" if self.pca_handler.pca is None and is_sparse else "Dataset"
+        title = f"Top {top_n} Loaded Features for {pc_type}{pc_num} on {dataset_name} {component_info}"
         
         # Update layout
-        if title is None:
-            explained_var = self.pca_handler.pca.explained_variance_ratio_[pc_idx]
-            title = f"Top {num_columns} Loading Features for PC{pc_index} ({explained_var*100:.2f}% variance)"
-        
         fig.update_layout(
-            title=title,
-            width=width,
-            height=total_height,
-            template='plotly_white',
-            showlegend=show_legend,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.01,
-                xanchor="right",
-                x=1
+            title=dict(
+                text=title,
+                x=0.5,  # Center the title
+                y=0.99,
+                font=dict(
+                    family="Arial",
+                    size=18,
+                )
             ),
-            margin=dict(l=20, r=20, t=80, b=20)
+            width=width,
+            height=height,
+            template='plotly_white',
+            showlegend=True,
+            legend=dict(
+                orientation="h",  # horizontal orientation
+                yanchor="top",
+                y=1.06,  # Position at the top
+                xanchor="center",
+                x=0.5
+            ),
+            margin=dict(l=60, r=80, t=100, b=20)
         )
         
-        # Update x-axis (only for the bottom subplot)
-        fig.update_xaxes(
-            title="Training Steps", 
-            row=len(top_columns), 
-            col=1,
-            type='log' if log_step_axis else 'linear'
-        )
-        
-        # Add grid to all subplots
-        if log_step_axis:
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray', type='log')
-        else:
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+        # Update all x-axes to log scale
+        for i in range(min(top_n, 10)):  # Maximum 10 subplots
+            row, col = get_subplot_position(i)
+            
+            # Set x-axis to log scale and add grid
+            fig.update_xaxes(
+                showline=True,
+                linewidth=1,
+                linecolor='black',
+                mirror=True,
+                showticklabels=True,
+                type='log',
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='LightGray',
+                row=row,
+                col=col,
+                # range=[self.pca_handler.step_range[0], self.pca_handler.step_range[1]]
+            )
+            
+            # Add "Training Steps" label to bottom plots
+            if row == 5:
+                fig.update_xaxes(title="Training Steps", row=row, col=col)
+            
+            # Add y-axis grid and title
+            fig.update_yaxes(
+                showline=True,
+                linewidth=1,
+                linecolor='black',
+                mirror=True,
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='LightGray',
+                title="Loss",
+                row=row,
+                col=col
+            )
         
         return fig
+
+
+
+### DM MATHEMATICS ###
+
+def load_token_mapping_dm_math(experiment_name, dataset_name):
+    tokens_path = f"/Users/liam/quests/lsoc-psych/datasets/experiments/{experiment_name}/trajectories/tokens/{dataset_name}_tokens.pkl"
+    
+    with open(tokens_path, 'rb') as f:
+        token_data = pickle.load(f)
+    
+    token_mapping = {}
+    
+    for context_id, context_data in token_data.items():
+        tokens = context_data['tokens']
+        for token_idx, token_value in enumerate(tokens):
+            key = f"context_{context_id}_pos_{token_idx}"
+            token_mapping[key] = token_value
+    
+    return token_mapping, token_data
+
+
+def build_category_columns(tokens_dict, answer_tokens_only=False):
+    """
+    Build a dictionary mapping each category to a dictionary of context IDs and 
+    their associated CSV column names based on the tokens (all tokens for full context 
+    or only answer tokens if answer_tokens_only is True).
+
+    The tokens_dict is updated in-place to add 'answer_tokens' (if needed) for each context.
+    """
+    category_columns = {}
+    for context_idx, context_data in tokens_dict.items():
+        # Get category (default to 'unknown' if not provided)
+        category = context_data.get('category', 'unknown')
+        tokens = context_data.get('tokens', [])
+        
+        # If we want answer tokens only, precompute them if they are not already set.
+        if answer_tokens_only:
+            if 'answer_tokens' not in context_data:
+                # Find the last newline index; tokens after this are considered the answer.
+                last_newline = -1
+                for i, token in enumerate(tokens):
+                    if token == "\n":
+                        last_newline = i
+                # Store answer token indices in the dictionary.
+                context_data['answer_tokens'] = list(range(last_newline + 1, len(tokens))) if last_newline != -1 else []
+            indices = context_data['answer_tokens']
+        else:
+            indices = list(range(len(tokens)))
+        
+        # Create the list of CSV column names for this context.
+        # The CSV columns are expected to have the format: "context_{context_idx}_pos_{token_idx}"
+        cols = [f"context_{context_idx}_pos_{i}" for i in indices]
+        
+        # Organize by category and context.
+        if category not in category_columns:
+            category_columns[category] = {}
+        category_columns[category][context_idx] = cols
+
+    return category_columns
+
+def get_answer_columns(tokens_dict):
+    category_columns = build_category_columns(tokens_dict, answer_tokens_only=True)
+    
+    answer_columns = []
+    for category, contexts in category_columns.items():
+        for context_idx, columns in contexts.items():
+            answer_columns.extend(columns)
+    
+    return answer_columns
+
+def load_dual_trajectory_data(experiment_name, dataset_name, model_sizes=None, 
+                             answer_only=False, num_contexts=None):
+    base_path = f"/Users/liam/quests/lsoc-psych/datasets/experiments/{experiment_name}/trajectories/csv"
+    _, tokens_dict = load_token_mapping_dm_math(experiment_name, dataset_name)
+    
+    columns_to_load = None
+    if answer_only:
+        columns_to_load = ['step'] + get_answer_columns(tokens_dict)
+        print(f"Loading {len(columns_to_load)-1} answer columns")
+
+    if model_sizes is None:
+        pattern_few = os.path.join(base_path, f"*_{dataset_name}_few_shot.csv")
+        file_paths_few = glob.glob(pattern_few)
+        model_sizes_few = [os.path.basename(fp).split('_')[0] for fp in file_paths_few]
+        
+        pattern_zero = os.path.join(base_path, f"*_{dataset_name}_zero_shot.csv")
+        file_paths_zero = glob.glob(pattern_zero)
+        model_sizes_zero = [os.path.basename(fp).split('_')[0] for fp in file_paths_zero]
+        
+        model_sizes = [size for size in model_sizes_few if size in model_sizes_zero]
+    
+    print(f"Loading data for model sizes: {model_sizes}")
+    trajectory_data = {}
+
+    # Get available columns with csv package, find intersection 
+    with open(file_paths_few[0], 'r') as f:
+        available_columns = next(csv.reader(f))
+    
+    columns_to_load = [col for col in columns_to_load if col in available_columns]
+    
+    if num_contexts is not None and not answer_only:
+        all_context_ids = sorted([int(ctx_id) for ctx_id in tokens_dict.keys()])
+        selected_context_ids = all_context_ids[:num_contexts]
+        
+        def should_include_column(col_name):
+            if col_name == 'step':
+                return True
+            parts = col_name.split('_')
+            if len(parts) >= 4 and parts[0] == 'context':
+                try:
+                    context_id = int(parts[1])
+                    return context_id in selected_context_ids
+                except ValueError:
+                    return False
+            return False
+    
+    for model_size in tqdm(model_sizes, desc="Loading trajectory data"):
+        trajectory_data[model_size] = {}
+        
+        few_shot_path = os.path.join(base_path, f"{model_size}_{dataset_name}_few_shot.csv")
+        zero_shot_path = os.path.join(base_path, f"{model_size}_{dataset_name}_zero_shot.csv")
+        
+        if answer_only:
+            df_few = pd.read_csv(few_shot_path, usecols=columns_to_load)
+            df_zero = pd.read_csv(zero_shot_path, usecols=columns_to_load)
+        elif num_contexts is not None:
+            with open(few_shot_path, 'r') as f:
+                header = f.readline().strip().split(',')
+            filtered_cols = [col for col in header if should_include_column(col)]
+            df_few = pd.read_csv(few_shot_path, usecols=filtered_cols)
+            
+            with open(zero_shot_path, 'r') as f:
+                header = f.readline().strip().split(',')
+            filtered_cols = [col for col in header if should_include_column(col)]
+            df_zero = pd.read_csv(zero_shot_path, usecols=filtered_cols)
+        else:
+            df_few = pd.read_csv(few_shot_path)
+            df_zero = pd.read_csv(zero_shot_path)
+        
+        few_cols_with_nan = df_few.columns[df_few.isna().any()].tolist()
+        zero_cols_with_nan = df_zero.columns[df_zero.isna().any()].tolist()
+        all_cols_with_nan = set(few_cols_with_nan + zero_cols_with_nan)
+        
+        if all_cols_with_nan:
+            df_few = df_few.drop(columns=[col for col in all_cols_with_nan if col in df_few.columns])
+            df_zero = df_zero.drop(columns=[col for col in all_cols_with_nan if col in df_zero.columns])
+        
+        few_cols = set(df_few.columns)
+        zero_cols = set(df_zero.columns)
+        common_cols = (few_cols.intersection(zero_cols)) - {'step'}
+        
+        if len(common_cols) < len(few_cols) - 1 or len(common_cols) < len(zero_cols) - 1:
+            df_few = df_few[['step'] + list(common_cols)]
+            df_zero = df_zero[['step'] + list(common_cols)]
+        
+        trajectory_data[model_size]['few_shot'] = df_few
+        trajectory_data[model_size]['zero_shot'] = df_zero
+    
+    def model_size_to_numeric(size_str):
+        if 'm' in size_str:
+            return float(size_str.replace('m', '')) * 1e6
+        elif 'b' in size_str:
+            return float(size_str.replace('b', '')) * 1e9
+        else:
+            try:
+                return float(size_str)
+            except ValueError:
+                return 0
+    
+    sorted_model_sizes = sorted(trajectory_data.keys(), key=model_size_to_numeric)
+    ordered_trajectory_data = {model_size: trajectory_data[model_size] for model_size in sorted_model_sizes}
+    
+    return ordered_trajectory_data
+
+
+class DualTrajectoryPCA:
+    """
+    Class for performing PCA on concatenated trajectory data for both few-shot and zero-shot.
+    
+    This class handles:
+    1. Renaming columns to differentiate between few-shot and zero-shot
+    2. Concatenating trajectory data from different model sizes (vertically)
+    3. Horizontally concatenating few-shot and zero-shot matrices
+    4. Applying PCA to the combined data
+    5. Transforming the original trajectories into the PCA space
+    6. Storing the transformed trajectories back in the original data structure
+    """
+    
+    def __init__(self, trajectory_data, 
+                 step_range=[None, None], 
+                 n_components=10, n_sparse_components=0, 
+                 scale=False,
+                 sparse_pca_params=None, 
+                 run_at_init=False,
+                 dataset_name=None,
+                 num_contexts=None):
+        """
+        Initialize DualTrajectoryPCA with trajectory data.
+        
+        Args:
+            trajectory_data (dict): Dictionary where keys are model sizes and 
+                                   values are dictionaries with 'few_shot' and 'zero_shot' dataframes
+            step_range (list): [min_step, max_step] to include in the analysis
+            n_components (int): Number of regular PCA components to use
+            n_sparse_components (int): Number of sparse PCA components to extract from residuals
+            scale (bool): Whether to standardize the data before PCA
+            sparse_pca_params (dict, optional): Parameters for the sparse PCA
+            run_at_init (bool): Whether to run the PCA pipeline during initialization
+            dataset_name (str): Name of the dataset
+            num_contexts (int): Number of contexts included
+        """
+        # Input data and parameters
+        self.trajectory_data = {}
+        self.step_range = step_range
+        self.n_components = n_components
+        self.n_sparse_components = n_sparse_components
+        self.scale = scale
+        self.sparse_pca_params = sparse_pca_params or {}
+        self.dataset_name = dataset_name
+        self.num_contexts = num_contexts
+        
+        # Find min_step and max_step from data
+        first_model = list(trajectory_data.keys())[0]
+        df_few = trajectory_data[first_model]['few_shot']
+        if self.step_range[0] is None:
+            min_step = df_few['step'].min()
+        else:
+            min_step = self.step_range[0]
+            
+        if self.step_range[1] is None:
+            max_step = df_few['step'].max()
+        else:
+            max_step = self.step_range[1]
+            
+        self.min_step = min_step
+        self.max_step = max_step
+        
+        # Process and rename columns in the input data
+        for model_size, shot_data in trajectory_data.items():
+            # Process few-shot data
+            df_few = shot_data['few_shot'].copy()
+            
+            # Apply step range filtering
+            df_few = df_few[(df_few['step'] >= min_step) & (df_few['step'] <= max_step)]
+            
+            # Rename columns to include "_few" suffix except for 'step'
+            col_mapping = {col: f"{col}_few" for col in df_few.columns if col != 'step'}
+            df_few = df_few.rename(columns=col_mapping)
+            
+            # Process zero-shot data
+            df_zero = shot_data['zero_shot'].copy()
+            
+            # Apply the same step range filtering
+            df_zero = df_zero[(df_zero['step'] >= min_step) & (df_zero['step'] <= max_step)]
+            
+            # Rename columns to include "_zero" suffix except for 'step'
+            col_mapping = {col: f"{col}_zero" for col in df_zero.columns if col != 'step'}
+            df_zero = df_zero.rename(columns=col_mapping)
+            
+            # Merge the two dataframes on 'step'
+            # This creates a horizontally concatenated dataframe with both few-shot and zero-shot data
+            merged_df = pd.merge(df_few, df_zero, on='step', how='inner')
+            
+            # Store the processed data directly in the trajectory_data dict
+            self.trajectory_data[model_size] = merged_df
+            
+        # Store the original structure for reference if needed
+        self.original_data = {}
+        for model_size, shot_data in trajectory_data.items():
+            self.original_data[model_size] = {
+                'few_shot': shot_data['few_shot'].copy(),
+                'zero_shot': shot_data['zero_shot'].copy()
+            }
+
+        # Model attributes
+        self.model_sizes = list(trajectory_data.keys())
+        self.pca = None
+        self.sparse_pca = None
+        self.scaler = None
+        
+        # Data containers
+        self.few_shot_columns = None
+        self.zero_shot_columns = None
+        self.combined_columns = None
+        self.concatenated_few_matrix = None
+        self.concatenated_zero_matrix = None
+        self.combined_matrix = None
+        self.pca_residual_matrix = None
+        self.row_indices = {}
+        
+        # Run pipeline at initialization if requested
+        if run_at_init:
+            self.run_pca_pipeline()
+    
+    def concatenate_trajectories(self):
+        """
+        Concatenate the horizontally-combined trajectories from all model sizes vertically.
+        
+        Returns:
+            np.ndarray: Combined matrix for PCA
+        """
+        # Extract column names from the first model's data
+        first_model = self.model_sizes[0]
+        all_columns = list(self.trajectory_data[first_model].columns)
+        step_column = ['step']
+        
+        # Separate few-shot and zero-shot columns
+        self.few_shot_columns = [col for col in all_columns if col.endswith('_few') and col != 'step']
+        self.zero_shot_columns = [col for col in all_columns if col.endswith('_zero') and col != 'step']
+        self.combined_columns = self.few_shot_columns + self.zero_shot_columns
+        
+        print(f"Few-shot columns: {len(self.few_shot_columns)}")
+        print(f"Zero-shot columns: {len(self.zero_shot_columns)}")
+        print(f"Combined columns: {len(self.combined_columns)}")
+        
+        # Initialize data matrix and row tracking
+        combined_data = []
+        start_idx = 0
+        
+        # Process each model
+        for model_size in self.model_sizes:
+            # Get the combined dataframe for this model
+            df = self.trajectory_data[model_size]
+            
+            # Extract all feature columns (both few-shot and zero-shot)
+            model_data = df[self.combined_columns].values
+            
+            # Store row indices for this model
+            end_idx = start_idx + len(model_data)
+            self.row_indices[model_size] = (start_idx, end_idx)
+            start_idx = end_idx
+            
+            # Append to the combined data
+            combined_data.append(model_data)
+        
+        # Vertically concatenate all data
+        self.combined_matrix = np.vstack(combined_data)
+        
+        print(f"Combined matrix shape: {self.combined_matrix.shape}")
+        
+        # For backward compatibility, also create separate few-shot and zero-shot matrices
+        few_shot_data = []
+        zero_shot_data = []
+        
+        for model_size in self.model_sizes:
+            df = self.trajectory_data[model_size]
+            few_shot_data.append(df[self.few_shot_columns].values)
+            zero_shot_data.append(df[self.zero_shot_columns].values)
+            
+        self.concatenated_few_matrix = np.vstack(few_shot_data)
+        self.concatenated_zero_matrix = np.vstack(zero_shot_data)
+        
+        return self.combined_matrix
+    
+    def fit_pca(self):
+        """
+        Fit PCA on the combined trajectory data.
+        
+        Returns:
+            Tuple[Optional[PCA], Optional[SparsePCA]]: Fitted PCA and SparsePCA objects
+        """
+        if self.combined_matrix is None:
+            self.concatenate_trajectories()
+            
+        # Scale the data if required
+        if self.scale:
+            self.scaler = StandardScaler()
+            scaled_data = self.scaler.fit_transform(self.combined_matrix)
+        else:
+            scaled_data = self.combined_matrix
+            
+        # Initialize PCA and sparse PCA objects to None
+        self.pca = None
+        self.sparse_pca = None
+        
+        # Fit regular PCA if n_components > 0
+        if self.n_components > 0:
+            self.pca = PCA(n_components=self.n_components)
+            self.pca.fit_transform(scaled_data)
+            
+            # Print explained variance for regular PCA
+            explained_var = self.pca.explained_variance_ratio_
+            cumulative_var = np.cumsum(explained_var)
+            
+            print(f"Regular PCA: Top {self.n_components} components explain {cumulative_var[-1]*100:.2f}% of variance")
+            print(f"Individual explained variance: {explained_var}")
+        
+        # Fit sparse PCA if n_sparse_components > 0
+        if self.n_sparse_components > 0:
+            # Calculate residuals if regular PCA was performed
+            if self.pca is not None:
+                pca_transformed = self.pca.transform(scaled_data)
+                reconstructed_data = self.pca.inverse_transform(pca_transformed)
+                self.pca_residual_matrix = scaled_data - reconstructed_data
+                print(f"Residual matrix shape after regular PCA: {self.pca_residual_matrix.shape}")
+            else:
+                # If no regular PCA was performed, use the original scaled data
+                self.pca_residual_matrix = scaled_data
+                print(f"Using full matrix for sparse PCA (no regular PCA performed): {self.pca_residual_matrix.shape}")
+            
+            # Default sparse PCA parameters
+            default_sparse_params = {
+                'alpha': 1.0,
+                'ridge_alpha': 0.01,
+                'max_iter': 1000,
+                'tol': 1e-6,
+                'random_state': 42
+            }
+            
+            # Update with user-provided parameters
+            sparse_params = {**default_sparse_params, **self.sparse_pca_params}
+            
+            # Fit sparse PCA on residuals or original data
+            self.sparse_pca = SparsePCA(n_components=self.n_sparse_components, **sparse_params)
+            self.sparse_pca.fit_transform(self.pca_residual_matrix)
+            
+            # Calculate sparsity of components
+            if hasattr(self, 'get_sparse_component_sparsity'):
+                component_sparsity = self.get_sparse_component_sparsity()
+                print(f"Sparsity of components (fraction of zero values): {component_sparsity}")
+            
+        return self.pca, self.sparse_pca
+    
+    def transform_trajectories(self):
+        """
+        Transform the original trajectories into the PCA space and store them back.
+        
+        Returns:
+            dict: Dictionary of transformed trajectories for each model size
+        """
+        if self.pca is None and self.sparse_pca is None:
+            raise ValueError("Neither PCA nor sparse PCA fitted. Call fit_pca() first.")
+            
+        transformed_data = {}
+        
+        for model_size in self.model_sizes:
+            # Get the original combined data
+            df = self.trajectory_data[model_size]
+            
+            # Extract features (both few-shot and zero-shot)
+            feature_values = df[self.combined_columns].values
+            
+            # Scale if needed
+            if self.scaler is not None:
+                processed_data = self.scaler.transform(feature_values)
+            else:
+                processed_data = feature_values
+                
+            # Initialize transformed DataFrame
+            transformed_df = pd.DataFrame()
+            
+            # Transform using regular PCA if it was fitted
+            if self.pca is not None:
+                pca_transformed = self.pca.transform(processed_data)
+                
+                # Create column names for regular PCA components
+                pca_component_cols = [f"PC{i+1}" for i in range(pca_transformed.shape[1])]
+                
+                # Add regular PCA components to DataFrame
+                pca_df = pd.DataFrame(pca_transformed, columns=pca_component_cols)
+                transformed_df = pd.concat([transformed_df, pca_df], axis=1)
+                
+                # Calculate residuals for sparse PCA if both were fitted
+                if self.sparse_pca is not None:
+                    reconstructed_data = self.pca.inverse_transform(pca_transformed)
+                    model_residuals = processed_data - reconstructed_data
+                else:
+                    model_residuals = None
+            else:
+                # If no regular PCA, use original data for sparse PCA
+                model_residuals = processed_data
+            
+            # Add sparse PCA components if fitted
+            if self.sparse_pca is not None and model_residuals is not None:
+                # Transform using sparse PCA
+                sparse_transformed = self.sparse_pca.transform(model_residuals)
+                
+                # Create column names for sparse PCA components
+                sparse_component_cols = [f"SPC{i+1}" for i in range(sparse_transformed.shape[1])]
+                
+                # Add sparse components to DataFrame
+                sparse_df = pd.DataFrame(sparse_transformed, columns=sparse_component_cols)
+                transformed_df = pd.concat([transformed_df, sparse_df], axis=1)
+            
+            # Add the step column
+            transformed_df['step'] = df['step'].values
+                
+            # Store the transformed data
+            transformed_key = f"{model_size}_transformed"
+            self.trajectory_data[transformed_key] = transformed_df
+            transformed_data[model_size] = transformed_df
+            
+        return transformed_data
+    
+    def run_pca_pipeline(self):
+        """
+        Run the complete PCA pipeline.
+        
+        Returns:
+            dict: Dictionary of transformed trajectories
+        """
+        self.concatenate_trajectories()
+        self.fit_pca()
+        transformed_data = self.transform_trajectories()
+        
+        # Normalize component signs if method exists
+        if hasattr(self, 'normalize_component_signs'):
+            self.normalize_component_signs()
+            
+            # After normalization, update transformed data
+            transformed_data = {}
+            for model_size in self.model_sizes:
+                transformed_key = f"{model_size}_transformed"
+                if transformed_key in self.trajectory_data:
+                    transformed_data[model_size] = self.trajectory_data[transformed_key]
+        
+        return transformed_data
+    
+    def get_sparse_component_sparsity(self):
+        """
+        Calculate the sparsity of each sparse PCA component.
+        
+        Returns:
+            list: List of sparsity values (fraction of zero values) for each component
+        """
+        if self.sparse_pca is None:
+            return None
+            
+        component_sparsity = []
+        for component in self.sparse_pca.components_:
+            non_zero = np.count_nonzero(component)
+            sparsity = 1.0 - (non_zero / len(component))
+            component_sparsity.append(sparsity)
+            
+        return component_sparsity
+    
+    def get_feature_loadings(self, pc_index=1, top_n=20, sparse=False):
+        """
+        Get the top feature loadings for a specific principal component.
+        
+        Args:
+            pc_index (int): Principal component index (1-based)
+            top_n (int): Number of top features to return
+            sparse (bool): Whether to use sparse PCA components
+            
+        Returns:
+            pd.DataFrame: DataFrame with feature names and loadings
+        """
+        pc_idx = pc_index - 1  # Convert to 0-based indexing
+        
+        if sparse:
+            if self.sparse_pca is None:
+                raise ValueError("Sparse PCA not fitted")
+            if pc_idx >= self.sparse_pca.components_.shape[0]:
+                raise ValueError(f"Sparse PC index {pc_index} exceeds available components")
+            component_loadings = self.sparse_pca.components_[pc_idx]
+            component_type = "SPC"
+        else:
+            if self.pca is None:
+                raise ValueError("PCA not fitted")
+            if pc_idx >= self.pca.components_.shape[0]:
+                raise ValueError(f"PC index {pc_index} exceeds available components")
+            component_loadings = self.pca.components_[pc_idx]
+            component_type = "PC"
+        
+        # Create DataFrame with all features and loadings
+        loadings_df = pd.DataFrame({
+            'Feature': self.combined_columns,
+            'Loading': component_loadings
+        })
+        
+        # Sort by absolute loading value
+        loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
+        loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
+        
+        # Add column to indicate whether it's from few-shot or zero-shot
+        loadings_df['Shot_Type'] = loadings_df['Feature'].apply(
+            lambda x: 'Few-Shot' if x.endswith('_few') else 'Zero-Shot'
+        )
+        
+        # Extract original column name without the _few or _zero suffix
+        loadings_df['Original_Feature'] = loadings_df['Feature'].apply(
+            lambda x: x[:-5] if x.endswith('_few') or x.endswith('_zero') else x
+        )
+        
+        # Get top features by absolute loading
+        top_loadings = loadings_df.head(top_n)
+        
+        return top_loadings
+    
+    def normalize_component_signs(self, reference_model=None):
+        """
+        Normalize PCA component signs so the reference model has positive values at the first step.
+        
+        Args:
+            reference_model (str, optional): Model to use as reference. Default: largest model
+        
+        Returns:
+            bool: Success status
+        """
+        # Select reference model (default to last/largest model)
+        if reference_model is None:
+            reference_model = self.model_sizes[-1]
+        
+        # Get transformed data for reference model
+        transformed_key = f"{reference_model}_transformed"
+        if transformed_key not in self.trajectory_data:
+            print("Warning: Reference model not found in transformed data. Skipping sign normalization.")
+            return False
+        
+        reference_data = self.trajectory_data[transformed_key]
+        
+        # Get first step row
+        if 'step' not in reference_data.columns:
+            print("Warning: Step column not found in reference data. Skipping sign normalization.")
+            return False
+            
+        min_step_row = reference_data.loc[reference_data['step'].idxmin()]
+        
+        # Normalize regular PCA components if they exist
+        if self.pca is not None:
+            pc_cols = [col for col in reference_data.columns if col.startswith('PC')]
+            for pc_col in pc_cols:
+                pc_idx = int(pc_col[2:]) - 1  # Extract PC index (0-based)
+                first_step_value = min_step_row[pc_col]
+                
+                # Flip sign if negative
+                if first_step_value < 0:
+                    self.pca.components_[pc_idx] *= -1
+                    for model_size in self.model_sizes:
+                        model_key = f"{model_size}_transformed"
+                        if model_key in self.trajectory_data and pc_col in self.trajectory_data[model_key].columns:
+                            self.trajectory_data[model_key][pc_col] *= -1
+        
+        # Normalize sparse PCA components if they exist
+        if self.sparse_pca is not None:
+            spc_cols = [col for col in reference_data.columns if col.startswith('SPC')]
+            for spc_col in spc_cols:
+                spc_idx = int(spc_col[3:]) - 1
+                first_step_value = min_step_row[spc_col]
+                
+                if first_step_value < 0:
+                    self.sparse_pca.components_[spc_idx] *= -1
+                    for model_size in self.model_sizes:
+                        model_key = f"{model_size}_transformed"
+                        if model_key in self.trajectory_data and spc_col in self.trajectory_data[model_key].columns:
+                            self.trajectory_data[model_key][spc_col] *= -1
+        
+        return True
+    
+    def get_sparse_component_variance(self, n_samples=1000):
+        """
+        Estimate the variance explained by sparse PCA components in the residual space.
+        
+        Args:
+            n_samples (int): Number of samples to use for variance estimation
+            
+        Returns:
+            np.ndarray: Array of explained variance ratios
+        """
+        if self.sparse_pca is None or self.pca_residual_matrix is None:
+            return None
+        
+        # Use a subset of samples if the residual matrix is very large
+        if self.pca_residual_matrix.shape[0] > n_samples:
+            indices = np.random.choice(self.pca_residual_matrix.shape[0], n_samples, replace=False)
+            residual_subset = self.pca_residual_matrix[indices]
+        else:
+            residual_subset = self.pca_residual_matrix
+        
+        # Calculate total variance in residual space
+        total_variance = np.var(residual_subset, axis=0).sum()
+        
+        # Transform the subset using sparse PCA
+        transformed = self.sparse_pca.transform(residual_subset)
+        
+        # Calculate variance explained by each component
+        component_variances = []
+        for i in range(transformed.shape[1]):
+            # Project back to the original feature space
+            component_projection = np.outer(transformed[:, i], self.sparse_pca.components_[i])
+            component_var = np.var(component_projection, axis=0).sum()
+            component_variances.append(component_var)
+        
+        # Convert to explained variance ratio
+        explained_variance_ratio = np.array(component_variances) / total_variance
+        
+        return explained_variance_ratio
+    
+    # Add compatibility property for TrajectoryPlotter
+    @property
+    def common_columns(self):
+        if self.combined_columns is None:
+            self.concatenate_trajectories()
+        return self.combined_columns
+
+
+
     
 ### OTHER DATA STUFF ###
-
-def save_pc_loadings_excel(pca_handler, filename, num_components=None, top_n=20, 
-                        include_sparse=True, token_mapping=None):
-    """
-    Save PC loadings to an Excel file with separate sheets for regular and sparse components.
-    
-    Args:
-        pca_handler: TrajectoryPCA instance with fitted PCA
-        filename (str): Output Excel file path
-        num_components (int, optional): Number of principal components to include
-        top_n (int): Number of top loading features per component
-        include_sparse (bool): Whether to include sparse components
-        token_mapping (dict, optional): Dictionary mapping column names to token values
-        
-    Returns:
-        bool: Success status
-    """
-
-    # Check if PCA has been fitted
-    if pca_handler.pca is None:
-        raise ValueError("PCA not fitted yet. Call fit_pca() first.")
-    
-    # Create Excel writer
-    with pd.ExcelWriter(filename) as writer:
-        # Add summary sheet
-        summary_data = []
-        
-        # Regular PCA summary
-        explained_var = pca_handler.pca.explained_variance_ratio_
-        
-        if num_components is None:
-            num_pca_components = len(explained_var)
-        else:
-            num_pca_components = min(num_components, len(explained_var))
-            
-        for i in range(num_pca_components):
-            summary_data.append({
-                "Component": f"PC{i+1}",
-                "Type": "Regular",
-                "Explained Variance (%)": explained_var[i] * 100,
-                "Cumulative Variance (%)": np.sum(explained_var[:i+1]) * 100
-            })
-        
-        # Get feature names
-        feature_names = pca_handler.common_columns
-        
-        # Process regular PCA components
-        loadings = pca_handler.pca.components_
-        
-        all_pc_data = []
-        
-        # For each regular PCA component
-        for i in range(num_pca_components):
-            # Get the loadings for this component
-            component_loadings = loadings[i]
-            
-            # Create a DataFrame with feature names and their loadings
-            loadings_df = pd.DataFrame({
-                'Feature': feature_names,
-                'Loading': component_loadings
-            })
-            
-            # Sort by absolute loading value
-            loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
-            loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
-            
-            # Get top N features
-            top_loadings = loadings_df.head(top_n)[['Feature', 'Loading']].copy()
-            
-            # If token mapping provided, add token information
-            if token_mapping:
-                top_loadings['Token'] = top_loadings['Feature'].apply(
-                    lambda x: token_mapping.get(x, "N/A")
-                )
-            
-            # Add component information
-            top_loadings['Component'] = f"PC{i+1}"
-            top_loadings['Explained Variance (%)'] = explained_var[i] * 100
-            
-            all_pc_data.append(top_loadings)
-        
-        # Combine all PC data
-        if all_pc_data:
-            all_pc_df = pd.concat(all_pc_data, ignore_index=True)
-            all_pc_df.to_excel(writer, sheet_name='Regular PCs', index=False)
-        
-        # Process sparse PCA components if available
-        all_spc_data = []
-        
-        if pca_handler.sparse_pca is not None and include_sparse:
-            sparse_loadings = pca_handler.sparse_pca.components_
-            
-            # Get sparsity
-            sparse_sparsity = None
-            if hasattr(pca_handler, 'get_sparse_component_sparsity'):
-                sparse_sparsity = pca_handler.get_sparse_component_sparsity()
-            
-            # Get variance explained
-            sparse_variance = None
-            if hasattr(pca_handler, 'get_sparse_component_variance'):
-                sparse_variance = pca_handler.get_sparse_component_variance()
-            
-            num_sparse_components = min(num_components if num_components else float('inf'), 
-                                    sparse_loadings.shape[0])
-            
-            # Add to summary
-            for i in range(num_sparse_components):
-                summary_entry = {
-                    "Component": f"SPC{i+1}",
-                    "Type": "Sparse",
-                }
-                
-                if sparse_sparsity is not None:
-                    summary_entry["Sparsity (%)"] = sparse_sparsity[i] * 100
-                
-                if sparse_variance is not None and i < len(sparse_variance):
-                    summary_entry["Explained Variance of Residuals (%)"] = sparse_variance[i] * 100
-                
-                summary_data.append(summary_entry)
-            
-            # For each sparse component
-            for i in range(num_sparse_components):
-                component_loadings = sparse_loadings[i]
-                
-                # Calculate sparsity for this component
-                sparsity = 1.0 - (np.count_nonzero(component_loadings) / len(component_loadings))
-                
-                # Create DataFrame
-                loadings_df = pd.DataFrame({
-                    'Feature': feature_names,
-                    'Loading': component_loadings
-                })
-                
-                # Sort by absolute loading
-                loadings_df['Abs_Loading'] = abs(loadings_df['Loading'])
-                loadings_df = loadings_df.sort_values('Abs_Loading', ascending=False)
-                
-                # Only include non-zero loadings
-                non_zero_mask = loadings_df['Loading'] != 0
-                non_zero_loadings = loadings_df[non_zero_mask]
-                
-                # Get top features
-                top_loadings = non_zero_loadings.head(top_n)[['Feature', 'Loading']].copy()
-                
-                # Add token information if available
-                if token_mapping:
-                    top_loadings['Token'] = top_loadings['Feature'].apply(
-                        lambda x: token_mapping.get(x, "N/A")
-                    )
-                
-                # Add component information
-                top_loadings['Component'] = f"SPC{i+1}"
-                top_loadings['Sparsity (%)'] = sparsity * 100
-                
-                if sparse_variance is not None and i < len(sparse_variance):
-                    top_loadings['Explained Variance of Residuals (%)'] = sparse_variance[i] * 100
-                
-                all_spc_data.append(top_loadings)
-            
-            # Combine all SPC data
-            if all_spc_data:
-                all_spc_df = pd.concat(all_spc_data, ignore_index=True)
-                all_spc_df.to_excel(writer, sheet_name='Sparse PCs', index=False)
-        
-        # Write summary sheet
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_excel(writer, sheet_name='Summary', index=False)
-    
-    print(f"PC loadings saved to {filename}")
-    return True
 
 
 def print_enhanced_pc_loadings(pca_handler, num_components=None, top_n=10,            
