@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 import pickle
 from io import StringIO
 import openpyxl
+import csv
 
 ### LOAD DATA ###
 
@@ -92,8 +93,10 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
         # For the first model, determine columns to sample if needed
         if column_fraction < 1.0 and sampled_columns is None:
             # Read just the header to get column names
-            header_df = pd.read_csv(file_path, nrows=0)
-            all_columns = header_df.columns.tolist()
+            # header_df = pd.read_csv(file_path, nrows=0)
+            # all_columns = header_df.columns.tolist()
+            with open(file_path, 'r') as f:
+                all_columns = next(csv.reader(f))
             
             # Always include 'step' column
             non_step_columns = [col for col in all_columns if col != 'step']
@@ -102,13 +105,15 @@ def load_trajectory_data(experiment_name, dataset_name, model_sizes=None, column
             num_cols_to_sample = max(1, int(len(non_step_columns) * column_fraction))
             
             # Randomly sample columns
-            np.random.seed(42)  # For reproducibility
-            sampled_non_step_columns = np.random.choice(non_step_columns, 
-                                                       size=num_cols_to_sample, 
-                                                       replace=False)
+            # np.random.seed(42)  # For reproducibility
+            # sampled_non_step_columns = np.random.choice(non_step_columns, 
+            #                                            size=num_cols_to_sample, 
+            #                                            replace=False)
+            # Get first num_cols_to_sample columns
+            sampled_non_step_columns = non_step_columns[:num_cols_to_sample]
             
             # Create final list of columns to load (step + sampled)
-            sampled_columns = ['step'] + sampled_non_step_columns.tolist()
+            sampled_columns = ['step'] + sampled_non_step_columns
             
             print(f"Loading {len(sampled_columns)-1} out of {len(non_step_columns)} columns")
         
@@ -163,7 +168,8 @@ class TrajectoryPCA:
     
     def __init__(self, trajectory_data: Dict[str, pd.DataFrame], start_step, 
                  n_components: int = 10, n_sparse_components: int = 0, scale: bool = False,
-                 sparse_pca_params: Optional[Dict] = None, run_at_init: bool = False):
+                 sparse_pca_params: Optional[Dict] = None, run_at_init: bool = False,
+                 dataset_name=None):
         """
         Initialize TrajectoryPCA with trajectory data.
         
@@ -184,6 +190,7 @@ class TrajectoryPCA:
         self.n_sparse_components = n_sparse_components
         self.scale = scale
         self.sparse_pca_params = sparse_pca_params or {}
+        self.dataset_name = dataset_name
         
         # Filter data by start_step
         for model_size in self.trajectory_data:
@@ -670,7 +677,7 @@ class TrajectoryPlotter:
 
         # Get explained variance for regular PCA components
         pca_explained_var = self.pca_handler.pca.explained_variance_ratio_
-        pc_titles = [f"PC{i+1} ({pca_explained_var[i]*100:.2f}%)" for i in range(num_pca_components)]
+        pc_titles = [f"PC{i+1} (E.V. {pca_explained_var[i]*100:.2f}%)" for i in range(num_pca_components)]
         
         # Handle sparse PCA components if available
         if self.pca_handler.sparse_pca is not None:
@@ -679,7 +686,8 @@ class TrajectoryPlotter:
             # Get sparsity for sparse components
             if hasattr(self.pca_handler, 'get_sparse_component_sparsity'):
                 sparse_sparsity = self.pca_handler.get_sparse_component_sparsity()
-                spc_titles = [f"SPC{i+1} (Sparsity: {sparse_sparsity[i]*100:.2f}%)" for i in range(num_sparse_components)]
+                sparse_explained_variance = self.pca_handler.get_sparse_component_variance()
+                spc_titles = [f"SPC{i+1} (Sparsity: {sparse_sparsity[i]*100:.2f}%, E.V. {sparse_explained_variance[i]*100:.2f}%)" for i in range(num_sparse_components)]
             else:
                 # Fallback if sparsity info not available
                 spc_titles = [f"SPC{i+1}" for i in range(num_sparse_components)]
