@@ -1151,7 +1151,7 @@ class TrajectoryPlotter:
         
         return fig
     
-    def plot_top_loaded_features_for_component(self, component: int, token_mapping=None):
+    def plot_top_loaded_features_for_component(self, component: int, token_mapping=None, token_data=None):
         """
         Plot the top 10 loaded features for a specific principal component.
         
@@ -1168,6 +1168,8 @@ class TrajectoryPlotter:
         line_width = 2
         min_step = 0
         num_features = 10
+
+        is_dual_pca = 'DualTrajectoryPCA' in str(type(self.pca_handler))
 
         component_idx = component - 1  # Convert to 0-based indexing
         
@@ -1219,7 +1221,6 @@ class TrajectoryPlotter:
         feature_names = self.pca_handler.common_columns
         
         # Create a DataFrame with feature names and their loadings
-        import pandas as pd
         loadings_df = pd.DataFrame({
             'Feature': feature_names,
             'Loading': component_loadings
@@ -1305,8 +1306,28 @@ class TrajectoryPlotter:
             # Add token info if available
             token_info = extract_context_from_feature(feature)
             
-            # Create title with rank, feature name, and loading
-            title = f"{i+1}. {feature}{token_info} (Loading: {loading:.4f})"
+            # Add this code for category annotation
+            category_info = ""
+            if token_data is not None and is_dual_pca:
+                try:
+                    # Handle feature name format for DualTrajectoryPCA (which has _few or _zero suffix)
+                    feature_base = feature
+                    if feature.endswith('_few') or feature.endswith('_zero'):
+                        feature_base = feature[:-5]
+                    
+                    # Extract context_id
+                    parts = feature_base.split('_pos_')[0].split('_')
+                    if len(parts) >= 2:
+                        context_id = int(parts[1])
+                        if context_id in token_data:
+                            category = token_data[context_id].get('category', 'unknown')
+                            category_info = f" [{category}]"
+                except:
+                    pass
+            
+            # Update your title creation
+            title = f"{i+1}. {feature}{token_info}{category_info} (Loading: {loading:.4f})"
+        
             
             # Calculate the position in the subplot_titles list for row-by-row ordering
             row, col = get_subplot_position(i)
@@ -2021,7 +2042,7 @@ class DualTrajectoryPCA:
         loadings_df['Original_Feature'] = loadings_df['Feature'].apply(
             lambda x: x[:-5] if x.endswith('_few') or x.endswith('_zero') else x
         )
-        
+
         # Get top features by absolute loading
         top_loadings = loadings_df.head(top_n)
         
@@ -2132,7 +2153,8 @@ class DualTrajectoryPCA:
         if self.combined_columns is None:
             self.concatenate_trajectories()
         return self.combined_columns
-
+    
+    
 
 
     
@@ -2360,3 +2382,122 @@ def print_enhanced_pc_loadings(pca_handler, num_components=None, top_n=10,
     
     # Return the full text
     return output_buffer.getvalue()
+
+
+def compute_pc_shot_cosine_similarity(pca_handler, sparse=True, top_k=None):
+    """
+    Compute the cosine similarity between principal components and the feature groups
+    (few-shot and zero-shot columns).
+    
+    Args:
+        pca_handler: DualTrajectoryPCA instance with fitted PCA
+        sparse (bool): Whether to use sparse PCA components (True) or regular PCA components (False)
+        top_k (int, optional): Only show top k components. If None, show all.
+        
+    Returns:
+        pd.DataFrame: Table with cosine similarities
+    """
+    from scipy.spatial.distance import cosine
+    import numpy as np
+    import pandas as pd
+    
+    # Make sure the PCA handler has the required attributes
+    if not hasattr(pca_handler, 'few_shot_columns') or not hasattr(pca_handler, 'zero_shot_columns'):
+        raise ValueError("Input doesn't appear to be a properly initialized DualTrajectoryPCA object")
+    
+    # Select the appropriate components based on sparse flag
+    if sparse and pca_handler.sparse_pca is not None:
+        components = pca_handler.sparse_pca.components_
+        pc_prefix = "SPC"
+    elif not sparse and pca_handler.pca is not None:
+        components = pca_handler.pca.components_
+        pc_prefix = "PC"
+    else:
+        raise ValueError(f"{'Sparse' if sparse else 'Regular'} PCA components not available")
+    
+    # Limit to top_k components if specified
+    if top_k is not None:
+        components = components[:top_k]
+    
+    # Get the feature lists
+    few_shot_features = pca_handler.few_shot_columns
+    zero_shot_features = pca_handler.zero_shot_columns
+    all_features = pca_handler.combined_columns
+    
+    # Create masks for few-shot and zero-shot columns
+    few_mask = np.array([col in few_shot_features for col in all_features])
+    zero_mask = np.array([col in zero_shot_features for col in all_features])
+    
+    # Create unit vectors for few-shot and zero-shot domains
+    # (1 where feature belongs to the domain, 0 elsewhere)
+    few_vector = np.zeros(len(all_features))
+    few_vector[few_mask] = 1
+    few_vector = few_vector / np.sqrt(np.sum(few_vector**2))  # Normalize to unit vector
+    
+    zero_vector = np.zeros(len(all_features))
+    zero_vector[zero_mask] = 1
+    zero_vector = zero_vector / np.sqrt(np.sum(zero_vector**2))  # Normalize to unit vector
+    
+    # Calculate cosine similarities
+    results = []
+    for i, component in enumerate(components):
+        # Normalize component
+        component_norm = component / np.sqrt(np.sum(component**2))
+        
+        # Calculate cosine similarity (1 - cosine distance)
+        few_sim = 1 - cosine(component_norm, few_vector)
+        zero_sim = 1 - cosine(component_norm, zero_vector)
+        
+        # Calculate bias toward one domain vs the other
+        # Positive means bias toward few-shot, negative means bias toward zero-shot
+        bias = few_sim - zero_sim
+        
+        results.append({
+            "Component": f"{pc_prefix}{i+1}",
+            "Few-Shot Similarity": few_sim,
+            "Zero-Shot Similarity": zero_sim,
+            "Bias (Few - Zero)": bias
+        })
+    
+    # Create DataFrame
+    result_df = pd.DataFrame(results)
+    
+    # Format for display
+    pd.set_option('display.float_format', '{:.4f}'.format)
+    
+    return result_df
+
+def print_pc_shot_cosine_table(pca_handler, sparse=True, regular=True, top_k=None):
+    """
+    Calculate and print cosine similarities between PCs and shot types.
+    
+    Args:
+        pca_handler: DualTrajectoryPCA instance with fitted PCA
+        sparse (bool): Whether to include sparse PCA components
+        regular (bool): Whether to include regular PCA components
+        top_k (int, optional): Only show top k components. If None, show all.
+    
+    Returns:
+        None (prints to console)
+    """
+    if regular and pca_handler.pca is not None:
+        print("=" * 80)
+        print("REGULAR PCA COMPONENTS - COSINE SIMILARITY WITH SHOT TYPES")
+        print("=" * 80)
+        df_regular = compute_pc_shot_cosine_similarity(pca_handler, sparse=False, top_k=top_k)
+        # Sort by PC number (extract number from string and convert to int)
+        df_regular['PC_Number'] = df_regular['Component'].str.extract(r'(\d+)').astype(int)
+        df_sorted = df_regular.sort_values('PC_Number').drop(columns=['PC_Number'])
+        print(df_sorted.to_string(index=False))
+        print("\n")
+    
+    if sparse and pca_handler.sparse_pca is not None:
+        print("=" * 80)
+        print("SPARSE PCA COMPONENTS - COSINE SIMILARITY WITH SHOT TYPES")
+        print("=" * 80)
+        df_sparse = compute_pc_shot_cosine_similarity(pca_handler, sparse=True, top_k=top_k)
+        # Sort by PC number (extract number from string and convert to int)
+        df_sparse['PC_Number'] = df_sparse['Component'].str.extract(r'(\d+)').astype(int)
+        df_sorted = df_sparse.sort_values('PC_Number').drop(columns=['PC_Number'])
+        print(df_sorted.to_string(index=False))
+        print("\n")
