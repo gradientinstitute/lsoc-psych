@@ -8,16 +8,35 @@ from typing import List, Dict, Any, Optional, Tuple
 import pickle
 
 import token_loss
+import sys
 
 
 def main():
+    if len(sys.argv) != 3:
+        print("Usage: python farm_models.py model_list part(1 or 2)")
+        return
+    model_file = sys.argv[1]
+    part = int(sys.argv[2])
+    assert part in [1, 2, 5]
+
     HF_KEY = os.environ.get("HF_KEY")
-    assert len(HF_KEY)
+    assert len(HF_KEY), "Set HF_KEY"
 
     # Configuration
     out_path = "output"
     model_list = pd.read_csv('model_list.csv')
-    threads_per_gpu = 2  # Adjust based on your GPU memory and workload
+
+    n = len(model_list)
+    cut = int(n /2)
+
+    if part in [1, 5]:
+        print("Doing first half of model list.")
+        model_list = model_list[:cut]
+    else:
+        print("Doing second half of model list.")
+        model_list = model_list[cut:]
+
+    threads_per_gpu = 2 # Adjust based on your GPU memory and workload
     max_gpu = 10  # debug to limit
     n_gpus = torch.cuda.device_count()
 
@@ -35,16 +54,18 @@ def main():
     data = token_loss.load_data()
     data["HF_KEY"] = HF_KEY
 
-    # # test single threaded first
-    # row = model_list.to_dict('records')[0]
-    # token_loss.process(row, "hello", torch.device("cpu"))
-    # return
-
     # Detect available GPUs
     if n_gpus == 0:
         print("No GPUs detected, falling back to CPU")
         n_gpus = 1  # CPU-only mode
     n_gpus = min(n_gpus, max_gpu)
+
+    if part==5:
+        # test single threaded first
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        row = model_list.to_dict('records')[0]
+        token_loss.process(**row, **data, device=device)
+        return
 
 
     total_threads = threads_per_gpu * n_gpus

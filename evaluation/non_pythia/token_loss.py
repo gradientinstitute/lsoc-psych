@@ -22,19 +22,27 @@ def process(name, url, filename, device, dataset_pile,
     dirname, _ = os.path.split(filename)
     assert os.path.exists(dirname)
 
-    # Set up model (so it can be used by both process functions)
-    print("Loading model...")
-    model, tokenizer = setup_model(url, device, HF_KEY)
+    assert HF_KEY
+
+    print(f"Getting tokenizer {name}")
+    tokenizer = AutoTokenizer.from_pretrained(
+        url,
+        token=HF_KEY,
+        trust_remote_code=True,
+        # add_special_tokens=False,  # incompatible
+    )
 
     # Tokenize (wow models have different tokenizer)
     print("Tokenizing...")
-
     fn_tokenize = make_token_mapper(
             tokenizer,
             padding=False,
     )
     dataset_pile = dataset_pile.map(fn_tokenize, batched=False)
-    # dataset_dm_math = dataset_dm_math.map(fn_tokenize, batched=False)
+
+    # Set up model (so it can be used by both process functions)
+    print("Loading model...")
+    model = setup_model(url, device, HF_KEY)
 
     # Process standard dataset
     print("Running standard checks...")
@@ -61,9 +69,7 @@ def process(name, url, filename, device, dataset_pile,
     print(f"Saving {filename}")
     with open(filename, "wb") as f:
         pickle.dump(combined_results, f)
-
     cleanup_model(model, name)
-
 
 
 def load_data(datasets=None):
@@ -71,9 +77,9 @@ def load_data(datasets=None):
     ## PRELOAD DATASETS
     dataset_pile = load_dataset("timaeus/pile_subsets_mini", split="train")
     dataset_pile = dataset_pile.add_column(
-        "idx", list(range(len(dataset_pile))))
+    "idx", list(range(len(dataset_pile))))
     dataset_pile = filter_subsets(
-        dataset_pile, include=datasets, exclude=["dm_mathematics"])
+        dataset_pile, include=datasets, exclude=[])
 
     dataset_dm_math = load_dataset("timaeus/dm_mathematics_mini", split="train")
 
@@ -107,7 +113,9 @@ def compute_token_loss(model, input_ids):
     token_log_probs = log_probs_np[batch_indices, seq_indices, targets_np]
 
     # THere is no loss on the first token
-    token_log_probs = np.hstack((np.zeros((batch_size, 1), np.float16), token_log_probs))
+    token_log_probs = np.hstack(
+        (np.zeros((batch_size, 1), token_log_probs.dtype),
+         token_log_probs))
     return -token_log_probs
 
 
@@ -123,24 +131,27 @@ def process_regular_dataset(model, device, dataset,
 
     for subset in subsets:
         select = dataset.filter(lambda x: x["subset"] == subset)
+        select = select.take(100)  # do a fixed number if we have them
         losses = []
 
-        # Process the dataset in batches
+        # If the inputs are different lengths, we can't batch them:
+        # Emulate the old batching
         for batch in tqdm(select.batch(batch_size=batch_size),
                           total=select.num_rows // batch_size,
                           desc=subset):
 
-            # Compute token losses batched
-            input_ids = torch.tensor(batch["input_ids"]).to(device)
-            token_losses = compute_token_loss(model, input_ids)
-            losses.extend(token_losses)
+            for input_ids in batch["input_ids"]:
+                # they're ragged now so process individually
+                input_ids = torch.tensor(input_ids).to(device)
+                token_losses = compute_token_loss(model, input_ids[None, :])[0]
+                losses.append(token_losses)
 
         # AL: convert to list of dicts to match Liam
-        results[subset] = interleave_dict({
+        results[subset] = { #interleave_dict({
             "context_id": select["idx"],
             "tokens": select["tokens"],
             "loss": losses,
-        })
+        } #)
     return results
 
 
@@ -156,8 +167,7 @@ def filter_subsets(dataset, include, exclude, field="subset"):
     return dataset.filter(lambda x: x[field] in subsets)
 
 
-def process_dm_mathematics(model, device, dataset, tokenizer, batch_size=32,
-                           max_context_length=512):
+def process_dm_mathematics(model, device, dataset, tokenizer, batch_size=32):
     """Process dm_mathematics dataset with zero-shot and few-shot approaches."""
     # categories can come from set(dataset['module'])
     print("Processing dm_mathematics...")
@@ -258,32 +268,20 @@ def process_dm_mathematics(model, device, dataset, tokenizer, batch_size=32,
             sample_probs = concat_token_loss[start_idx:end_idx]
             results[orig_idx]["loss"]["few-shot"] = sample_probs
 
-    return {"dm_mathematics": results}
+    return {"dm_math_categories": results}
 
 
 def make_token_mapper(tokenizer, field="text", **kwargs):
     """Create a function to tokenize a dataset through map."""
     def fn_tokenize(example):
-        input_ids = tokenizer.encode(
-            example[field],
-        )
-
-        # The sampled size is either 512 or 100
-        clip = 512 if len(input_ids) > 250 else 100
-
-        if input_ids[-1] == 535:
-            # Handle the non-invertible \n\n coding
-            input_ids[-1] = 187
-            input_ids.append(187)
-
-        while len(input_ids) < clip:
-            input_ids.append(187)
-
-        input_ids = input_ids[:clip]
+        text = example[field]
+        input_ids = tokenizer.encode(text)
+        tokens = tokenizer.batch_decode(input_ids)
+        # assert "".join(tokens) == text
 
         return {
             "input_ids": input_ids,
-            "tokens": tokenizer.batch_decode(input_ids),
+            "tokens": tokens,
         }
 
     return fn_tokenize
@@ -305,24 +303,21 @@ def contiguous_dict(y):
     return z
 
 
-def setup_model(model_name, device, HF_KEY, revision=None, max_retries=10, rest=10):
+def setup_model(model_name, device, HF_KEY, revision=None, max_retries=1,
+                rest=10, get_model=True):
     """Load model and tokenizer with specified revision."""
 
     for _ in range(max_retries):
         try:
             print(f"Getting model {model_name}")
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name, revision=revision, torch_dtype=torch.float16,
-                token=HF_KEY,
-                trust_remote_code=True,
-                #device_map="auto"  # contradicts manual device handling below
-            )
-            print(f"Getting tokenizer {model_name}")
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                token=HF_KEY,
-                trust_remote_code=True,
-            )
+            model=None
+            if get_model:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name, revision=revision, torch_dtype=torch.float16,
+                    token=HF_KEY,
+                    trust_remote_code=True,
+                    #device_map="auto"  # contradicts manual device handling below
+                )
 
             break  # I guess it worked
         except Exception as e:
@@ -331,10 +326,11 @@ def setup_model(model_name, device, HF_KEY, revision=None, max_retries=10, rest=
     else:
         assert False, "Couldnt load model!"
 
-    model.eval()  # switch model to evaluation mode
-    model.to(device)
+    if get_model:
+        model.eval()  # switch model to evaluation mode
+        model.to(device)
 
-    return model, tokenizer
+    return model
 
 
 def cleanup_model(model, model_name):
