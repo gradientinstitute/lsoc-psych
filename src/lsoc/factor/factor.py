@@ -1,30 +1,24 @@
-"""
-Masked Factorisation Methods
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
 
-* Being somewhat naive about the direct optimisation solver - look into efficient constrainted options
-* if at any point gradients become non-trivial switch to jax / TF as I usually would
-
-"""
+"""Masked Factorisation For Model Selection"""
 from scipy.optimize import minimize
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import TruncatedSVD, FactorAnalysis
-# import autograd.numpy as np
-# from autograd import grad
 
 
 class FA:
-    """Implement PCA for missing-at-random data."""
+    """Implement Factor Analysis for masked data."""
 
-    def __init__(self, iters=20, **kwargs):
-        self.name = "FA"  # Used for plotting etc.
+    def __init__(self, iters=20, **kwargs): self.name = "FA"
         self.iters = iters
-        # Lazily pass on all arguments
+        # Wrap scikit-learn...
         self.model = FactorAnalysis(kwargs)
 
     def fit(self, X, dims, mask=None):
-
+        """Masked factorisation."""
         assert mask is None or mask.dtype == bool
 
         if isinstance(X, pd.DataFrame):
@@ -242,83 +236,9 @@ class NMF:
         self.R = U @ V + mu
         return self.R
 
-# pentalty to encourage orthogonality during optimisation: related to V'V - I
-# sparse projection V, _ = np.linalg.qr(V)  # Project to orthogonal space
-
-
-
-"""Notes on sparse PCA...
-power method with L1 regularisation
-solving as a regularised optimisation with an orthogonality constraint
-U^T U = I
-"""
-def sparse_pca_power(X, n_components, alpha, max_iter=100):
-    n_samples, n_features = X.shape
-    components = []
-
-    for k in range(n_components):
-        # Initialize random
-        v = np.random.randn(n_features)
-
-        for _ in range(max_iter):
-            # Power iteration with soft thresholding
-            v = X.T @ (X @ v)
-            # L1 sparsity through soft thresholding
-            v = np.sign(v) * np.maximum(np.abs(v) - alpha, 0)
-            # Normalize
-            v = v / np.linalg.norm(v)
-
-        components.append(v)
-        # Deflate X
-        X = X - X @ v.reshape(-1,1) @ v.reshape(1,-1)
-
-    return np.array(components).T
-
-def sparse_pca_orthogonal(X, n_components, alpha, max_iter=100):
-    # Projected gradient descent
-    V = np.random.randn(n_features, n_components)
-    V, _ = np.linalg.qr(V)  # Initialize with orthogonal matrix
-
-    for _ in range(max_iter):
-        # Regular gradient step
-        grad = -2 * X.T @ (X @ V)
-        V_new = V - learning_rate * grad
-
-        # Soft thresholding for sparsity
-        V_new = np.sign(V_new) * np.maximum(np.abs(V_new) - alpha, 0)
-
-        # Project back to orthogonal matrices (using QR)
-        V, _ = np.linalg.qr(V_new)
-
-# dictionary learning solves L1 regularised - sparsity is on the coefficients rather than the ciomponents (but you can transform)
-# alternates between sparse coding : solve for U given V
-# solve for V given fixed U
-
-
-def procrustes(A, B):
-    """Can also find closest orthogonal matrix to AB^T"""
-    U, _, Vh = np.linalg.svd(B @ A.T)
-    return U @ Vh
-
-
-def sparse_pca_procrustes(X, n_components, alpha):
-    V = np.random.randn(n_features, n_components)
-    V, _ = np.linalg.qr(V)
-
-    for _ in range(max_iter):
-        # Update U with fixed V
-        U = X @ V
-
-        # Update V with orthogonality
-        V_update = X.T @ U
-        # Soft threshold
-        V_update = np.sign(V_update) * np.maximum(np.abs(V_update) - alpha, 0)
-        # Project to closest orthogonal matrix
-        V = procrustes(V_update, V)
-
 
 class TRD:
-    """Implement tensor rank decomposition."""
+    """Tensor rank decomposition."""
 
     def __init__(self, dims=4, positive=[]):
         self.dims = dims
@@ -446,7 +366,7 @@ class TRD:
 
 
 def mse(F, X, mask):
-    """Masked squared error objective"""
+    """Masked squared error optimisation objective."""
     err = (F - X)
     err[mask] = 0  # apply loss masking
     l = np.sum((err**2))
@@ -454,16 +374,8 @@ def mse(F, X, mask):
     return l, lg
 
 
-# def _fit2(self, X, dims):
-#     """Stock standard PCA on a full matrix."""
-#     self.mu = X.mean(axis=0)
-#     svd = TruncatedSVD(n_components=dims)
-#     self.U = svd.fit_transform(X - self.mu)
-#     self.V = svd.components_
-#     self.R = self.U @ self.V + self.mu
-
 def fill_column_mean(X, mask):
-    # Initialise - by filling the masked bits with the column means
+    """Fill masked values with column means."""
     assert not np.isnan(X[~mask]).any()  # ensure all nan values are masked
     Xd = X.copy()
     Xd[mask] = 0

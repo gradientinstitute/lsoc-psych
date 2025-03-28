@@ -1,3 +1,6 @@
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
+
 import pandas as pd
 import numpy as np
 from scipy import linalg

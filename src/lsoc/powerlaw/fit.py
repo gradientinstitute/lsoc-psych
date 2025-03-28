@@ -1,3 +1,6 @@
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
+
 import autograd.numpy as np
 import autograd
 from scipy import optimize
@@ -8,7 +11,7 @@ from inspect import signature
 
 
 class ModelSpec(ABC):
-    """Class to specify a scaling law model."""
+    """Base class for scaling law relations."""
 
     par0: List[float]  # Initial parameters
     par_names: List[str]  # Parameter names
@@ -64,19 +67,6 @@ class OffsetPowerLaw(ModelSpec):
         return ((y - y0)/c)**(-1./r)
 
 
-class Modron(ModelSpec):
-
-    @staticmethod
-    def function(x, params):
-        b, a, y0, c, r = params
-        v = a * np.log(x) + b
-        return y0 + c * (v**(-r))
-
-    par_names = ["y*", "a", "y*", "c", "r"]
-    par0 = [0., 1., 0., 1., 1.]
-    name = "Offset Power Logarithm"
-
-
 class OffsetPowerLaw2(ModelSpec):
     """
     Single Offset Power Law model.
@@ -123,6 +113,7 @@ class XOffsetPowerLaw(ModelSpec):
 
 
 class XOffsetPowerLaw2(ModelSpec):
+    """Like XOffsetPowerLaw but with log params and positive c."""
 
     @staticmethod
     def function(x, params):
@@ -232,8 +223,7 @@ class DoubleOffsetPowerLaw(ModelSpec):
 
 @dataclass
 class FitResult:
-    """Collection to specify a fit result."""
-    # This is still evolving a bit...
+    """Fit optimization result class."""
     f: Callable  # the function
     model: ModelSpec  # The functional form learned
     params: list  # parameter list
@@ -297,6 +287,7 @@ def convert_bounds(bounds, big_number=1e8):
 
 
 def curve_fit(x, y, model, rel_noise=False, par0=None):
+    """Optimise by error in y."""
     assert not rel_noise, "Heteroskedastic noise not implemented for curvefit"
     ## Unused
     if par0 is None:
@@ -321,8 +312,7 @@ def curve_fit(x, y, model, rel_noise=False, par0=None):
 
 
 def min_fit(x, y, model, method="L-BFGS-B", rel_noise=False, par0=None):
-
-    # Optimise =========================================
+    """Optimise by error in y."""
     def opt_loss(params):
         y_pred = model.function(x, params)
         if rel_noise:

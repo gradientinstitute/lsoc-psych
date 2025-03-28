@@ -1,3 +1,7 @@
+# Copyright (c) Gradient Institute. All rights reserved.
+# Licensed under the Apache 2.0 License.
+"""Setup LSOC repo."""
+
 from setuptools import setup, find_packages
 
 
@@ -23,8 +27,8 @@ setup(
     python_requires=">=3.8",
 
     # Package metadata
-    author="Alistair Reid",
+    author="Gradient Institute and Timaeus",
     author_email="alistair.reid@gradientinstitute.org",
+    license="Apache License 2.0",
     description="Analysis tools for latent capabilities.",
-
 )

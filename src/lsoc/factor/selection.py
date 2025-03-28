@@ -1,9 +1,13 @@
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
+
 import numpy as np
 from sklearn.model_selection import KFold
 import pandas as pd
 
 
 def cross_validate(X, model, max_factors, n_folds=10, repeats=10):
+    """Repeated k-fold cross validation for factorisers."""
 
     if isinstance(X, pd.DataFrame):
         X = X.values

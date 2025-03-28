@@ -1,3 +1,6 @@
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from plotly.colors import DEFAULT_PLOTLY_COLORS
@@ -47,7 +50,7 @@ def heatmap(table, width, height, upper=False, title="", decimals=2, **kwargs):
 
 
 def traces(X, stds={}, cmap="turbo", col=1, cols=1, fig=None):
-    """Plot traces from a 2d matrix, splitting on / in column names."""
+    """Plot traces from a 2d matrix, splitting tasks on / in column names."""
     steps = X.index.values
     task_names = sorted(list(set(v.split("/")[1] for v in X.columns)))
     categories = sorted(list(set(v.split("/")[0] for v in X.columns)))
@@ -201,7 +204,7 @@ def crossval(heldout_err, heldout_std, fit_err, method_name):
     return fig
 
 
-# Plotly has this bug where the first figure doesn't show --> prime the system
+# Plotly has a bug where the first figure doesn't show --> prime the system
 fig = go.Figure()
 fig.update_layout(width=10, height=10)  # non-display size
 fig.show()
