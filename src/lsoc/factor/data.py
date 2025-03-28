@@ -47,6 +47,14 @@ def apply_noise(T, sigma=0.05, sigma_hs=0., sigma_p=0.05, seed=42):
     return X
 
 
+def order_by_primary(df):
+    """Another heuristic to order (loadings/scores)."""
+    ld = np.abs(df.values)
+    main_load = ld.argmax(axis=1)
+    order = np.argsort(main_load * 100 - ld.max(axis=1))
+    return df.iloc[order]
+
+
 def preorder(X):
     """Structure data by pre-ordering columns with heirarchical clustering"""
     V = X

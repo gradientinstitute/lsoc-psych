@@ -29,8 +29,8 @@ def heatmap(table, width, height, upper=False, title="", decimals=2, **kwargs):
         z=matrix,
         x=table.columns,
         y=table.index,
-        text=np.round(table.values, decimals=decimals),
-        texttemplate="%{text}",
+        text=table.values,
+        texttemplate="%{text:."+str(decimals)+"f}",
         **args,
     )
     fig = go.Figure(map)
