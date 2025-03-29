@@ -14,7 +14,7 @@ import pickle
 
 
 def process(name, url, filename, device, dataset_pile,
-            dataset_dm_math, HF_KEY):
+            dataset_dm_math, HF_KEY, revision=None):
 
     if os.path.exists(filename):
         print(f"{filename} exists - skipping!")
@@ -45,7 +45,7 @@ def process(name, url, filename, device, dataset_pile,
 
     # Set up model (so it can be used by both process functions)
     print("Loading model...")
-    model = setup_model(url, device, HF_KEY)
+    model = setup_model(url, device, HF_KEY, revision=revision)
 
     # Process standard dataset
     print("Running standard checks...")
@@ -312,7 +312,10 @@ def setup_model(model_name, device, HF_KEY, revision=None, max_retries=1,
 
     for _ in range(max_retries):
         try:
-            print(f"Getting model {model_name}")
+            if revision:
+                print(f"Getting model {model_name}@{revision}")
+            else:
+                print(f"Getting model {model_name}")
             model=None
             if get_model:
                 model = AutoModelForCausalLM.from_pretrained(

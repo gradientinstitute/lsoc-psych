@@ -1,0 +1,14 @@
+ipython
+torch
+numpy
+tqdm
+transformers
+datasets
+pandas
+einops
+protobuf
+flash_attn
+accelerate
+einops
+ai2-olmo
+tiktoken

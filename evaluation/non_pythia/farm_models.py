@@ -27,7 +27,8 @@ def main():
 
     # Configuration
     out_path = "output"
-    model_list = pd.read_csv('model_list.csv')
+    model_list = pd.read_csv(model_file)
+
 
     n = len(model_list)
     cut = int(n /2)
@@ -50,7 +51,8 @@ def main():
         display = record['name'].strip().replace("/", "").replace(" ", "_")
         filenames.append(f"{out_path}/{display}.pkl")
     model_list["filename"] = filenames 
-    model_list.drop(columns=['num_parameters'], inplace=True)
+    if "num_parameters" in model_list:
+        model_list.drop(columns=["num_parameters"], inplace=True)
     model_list['url'] = [v.strip() for v in model_list['url']]
 
     # preload the data
