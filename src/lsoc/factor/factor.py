@@ -12,7 +12,8 @@ from sklearn.decomposition import TruncatedSVD, FactorAnalysis
 class FA:
     """Implement Factor Analysis for masked data."""
 
-    def __init__(self, iters=20, **kwargs): self.name = "FA"
+    def __init__(self, iters=20, **kwargs):
+        self.name = "FA"
         self.iters = iters
         # Wrap scikit-learn...
         self.model = FactorAnalysis(kwargs)

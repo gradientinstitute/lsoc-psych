@@ -21,11 +21,13 @@ This repository contains analysis code for the Latent Space of Capabilities (LSo
 
 ## Installation
 
-To install the `lsoc` package, clone it from github and then in the cloned directory:
+To install the `lsoc` package, clone it from github and then in the cloned directory.
+To use the sample data without configuration, install with `-e`.
 
 ```bash
-pip install .
+pip install -e .
 ```
+
 
 ## Examples
 

@@ -177,7 +177,9 @@ google_colab.py
 samples
 
 # within datasets
-experiments
-
-# and my scratchpad I don't want to commit yet
 experimental
+
+# too big:
+data/pile_samples
+data/dm_mathematics
+data/helm_evals
