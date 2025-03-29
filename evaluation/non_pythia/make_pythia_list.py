@@ -1,3 +1,6 @@
+# Copyright (c) Gradient Institute and Timaeus. All rights reserved.
+# Licensed under the Apache 2.0 License.
+
 from huggingface_hub import list_repo_refs
 import numpy as np
 
