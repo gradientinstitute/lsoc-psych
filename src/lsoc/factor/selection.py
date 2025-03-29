@@ -6,7 +6,7 @@ from sklearn.model_selection import KFold
 import pandas as pd
 
 
-def cross_validate(X, model, max_factors, n_folds=10, repeats=10):
+def cross_validate(X, model, max_factors, n_folds=10, repeats=10, seed=42):
     """Repeated k-fold cross validation for factorisers."""
 
     if isinstance(X, pd.DataFrame):
@@ -26,13 +26,14 @@ def cross_validate(X, model, max_factors, n_folds=10, repeats=10):
         MSEs = []  # Samples losses
 
         for r in range(repeats):
-            kf = KFold(n_splits=n_folds, shuffle=True, random_state=42+r)
+            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed+r)
             for train_idx, test_idx in kf.split(indices):
                 mask = np.zeros(X.shape, bool)
                 mask.flat[test_idx] = True
                 if len(X.shape) == 2:
                     # never completely mask
-                    assert all(mask.shape[1] != mask.sum(axis=1))
+                    assert all(mask.shape[1] != mask.sum(axis=1)), \
+                           "Columns are completely masked!"
                 R = model.fit(X, dims, mask)
                 mse = np.mean((R[mask] - X[mask])**2)
                 MSEs.append(mse)

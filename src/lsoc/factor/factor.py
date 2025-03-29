@@ -391,3 +391,18 @@ def unit_norm(v):
     # normalise along axis 1
     norm = (v**2).sum(axis=1) ** .5
     return v / norm[:, None]
+
+
+class ConstScaler:
+    """Drop in placeholder for a scaling pipeline."""
+
+    def __init__(self, scale):
+        self.scale = scale
+
+    def fit_transform(self, X):
+        return self.transform(X)
+
+    def transform(self, X):
+        return X / self.scale
+
+
