@@ -183,3 +183,5 @@ experimental
 data/pile_samples
 data/dm_mathematics
 data/helm_evals
+
+.DS_STORE
