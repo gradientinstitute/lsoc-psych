@@ -9,6 +9,5 @@ einops
 protobuf
 flash_attn
 accelerate
-einops
 ai2-olmo
 tiktoken
