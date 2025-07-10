@@ -181,3 +181,9 @@ experiments
 datasets/experiments
 datasets/notebooks
 datasets/plotting
+
+datasets/spca_models_sweep
+
+diversetm_eval_data
+
+wandb

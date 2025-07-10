@@ -899,8 +899,16 @@ class TrajectoryPlotter:
             plotly.graph_objects.Figure: Plotly figure with grid subplots
         """
         # Set fixed parameters
+        num_components = self.pca_handler.n_components + self.pca_handler.n_sparse_components
+        if num_components == 100:
+            height = 10000
+            vertical_spacing=0.005
+            horizontal_spacing=0.05
+        else: 
+            height = 1200
+            vertical_spacing=0.06
+            horizontal_spacing=0.08
         width = 1300
-        height = 1200
         line_width = 2
         
         # Initialize variables for component titles
@@ -985,11 +993,11 @@ class TrajectoryPlotter:
         
         # Create subplot layout
         fig = make_subplots(
-            rows=5,
+            rows=num_components//2,
             cols=2,
             subplot_titles=subplot_titles,
-            vertical_spacing=0.06,
-            horizontal_spacing=0.08
+            vertical_spacing=vertical_spacing,
+            horizontal_spacing=horizontal_spacing
         )
         
         # Helper function to get row, col from component index (0-based)

@@ -5,6 +5,8 @@ import glob
 from tqdm import tqdm
 from sklearn.decomposition import PCA, SparsePCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import ridge_regression
 from typing import Dict, List, Optional, Tuple, Union
 import plotly.graph_objects as go
 import plotly.express as px
@@ -202,6 +204,40 @@ def get_viridis_colors(n):
     """
     return px.colors.sample_colorscale("viridis", np.linspace(0, 1, n))
 
+
+def block_train_test_split(n_samples, block_size, test_size=0.2, random_state=42):
+    """Like a shuffled train_test_split but selects contiguous blocks to handle autocorrelation
+    
+    Args:
+        n_samples (int): Total number of samples
+        block_size (int): Size of contiguous blocks
+        test_size (float): Fraction of data to use for testing
+        random_state (int): Random seed for reproducibility
+        
+    Returns:
+        tuple: (train_indices, test_indices)
+    """
+    # Select a shuffled set of blocks
+    n_blocks = int(np.ceil(n_samples / block_size))
+    rng = np.random.RandomState(random_state)
+    shuffled_blocks = rng.permutation(n_blocks)
+    
+    # Create a boolean array indicating which blocks are for training
+    block_is_train = np.ones(n_blocks, dtype=bool)
+    n_test_blocks = int(np.ceil(n_blocks * test_size))
+    block_is_train[shuffled_blocks[:n_test_blocks]] = False
+    
+    # Map each sample to its corresponding block's train/test status
+    block_indices = np.arange(n_samples) // block_size
+    is_train = block_is_train[block_indices]
+    
+    # Get indices
+    train_indices = np.where(is_train)[0]
+    test_indices = np.where(~is_train)[0]
+    
+    return train_indices, test_indices
+
+
 class FilteredStdout:
     """
     A stdout filter that only allows through specific lines
@@ -228,20 +264,19 @@ class FilteredStdout:
 
 class SparseTrajectoryPCA:
     """
-    Class for performing sparse PCA on concatenated trajectory data across multiple model sizes.
-    
-    This class handles:
-    1. Concatenating trajectory data from different model sizes
-    2. Applying sparse PCA to the concatenated data
-    3. Transforming the original trajectories into the sparse PCA space
-    4. Storing the transformed trajectories back in the original data structure
+    Class for performing sparse PCA on concatenated trajectory data across multiple model sizes,
+    with optional bi-cross-validation for hyperparameter selection.
     """
     
-    def __init__(self, trajectory_data: Dict[str, pd.DataFrame], 
-             step_range=[None, None], 
-             n_sparse_components: int = 10, scale: bool = False,
-             sparse_pca_params: Optional[Dict] = None, run_at_init: bool = True,
-             dataset_name=None):
+    def __init__(self, 
+                 trajectory_data: Dict[str, pd.DataFrame], 
+                 step_range=[None, None], 
+                 n_sparse_components: int = 10, 
+                 scale: bool = True,
+                 sparse_pca_params: Optional[Dict] = None, 
+                 cross_val_params: Optional[Dict] = None,
+                 transform_trajectories: bool = True,
+                 dataset_name=None):
         """
         Initialize SparseTrajectoryPCA with trajectory data.
         
@@ -252,9 +287,10 @@ class SparseTrajectoryPCA:
             n_sparse_components (int): Number of sparse PCA components to extract
             scale (bool): Whether to standardize the data before PCA
             sparse_pca_params (dict, optional): Parameters for the sparse PCA
-            run_at_init (bool): Whether to run the PCA pipeline during initialization
+            cross_val_params (dict, optional): Parameters for bi-cross-validation.
+                                              If None, no cross-validation is performed.
+            transform_trajectories (bool): Whether to transform the original trajectories
             dataset_name (str, optional): Name of the dataset for reference
-            num_contexts (int, optional): Number of contexts included in the data
         """
         # Input data and parameters
         self.trajectory_data = {}
@@ -262,21 +298,34 @@ class SparseTrajectoryPCA:
         self.n_sparse_components = n_sparse_components
         self.scale = scale
         self.dataset_name = dataset_name
+        self.transform_trajectories_flag = transform_trajectories
 
         # Default sparse PCA parameters
         default_sparse_params = {
-            'alpha': 1.0,  # L1 penalty parameter
+            'alpha': 1.0,         # L1 penalty parameter
             'ridge_alpha': 0.01,  # Ridge penalty parameter
             'max_iter': 1000,
             'tol': 1e-6,
-            'random_state': 42, # stablisises initalisation too
-            'n_jobs':-1,
-            'method': 'cd' # better for dense data
+            'random_state': 42,   # Stabilizes initialization
+            'n_jobs': -1,
+            'method': 'cd',        # Better for dense data
+            'verbose': True
         }
         
         # Update with user-provided parameters
         sparse_pca_params = sparse_pca_params if sparse_pca_params is not None else {}
         self.sparse_params = {**default_sparse_params, **sparse_pca_params}
+        
+        # Default cross-validation parameters
+        self.use_cross_val = cross_val_params is not None
+        if self.use_cross_val:
+            default_cross_val_params = {
+                'row_frac': 0.3,
+                'col_frac': 0.3,
+                'row_autocorr': 2,
+                'seed': 42
+            }
+            self.cross_val_params = {**default_cross_val_params, **(cross_val_params or {})}
         
         # Copy the data, filtering by step_range
         for model_size, df in trajectory_data.items():
@@ -291,11 +340,24 @@ class SparseTrajectoryPCA:
         self.min_step = min_step
         self.max_step = max_step
 
-        self.optimization_history = []
+        # Results container
+        self.results = {
+            'optimization_history': {
+                'iterations': [],
+                'cost_history': [],
+                'time_elapsed': []
+            },
+            'total_proportion_sparsity': None,
+            'component_sparsity': None,
+            'bi_cross_val_loss': None,
+            'total_reconstruction_error': None,
+            'total_variance': None
+        }
 
         # Model attributes
         self.model_sizes = list(trajectory_data.keys())
-        self.sparse_pca = None
+        # Initialize SparsePCA model
+        self.sparse_pca = SparsePCA(n_components=self.n_sparse_components, **self.sparse_params)
         self.scaler = None
         
         # Data containers
@@ -303,18 +365,85 @@ class SparseTrajectoryPCA:
         self.concatenated_matrix = None
         self.raw_concatenated_matrix = None
         self.row_indices = None
+        self.train_indices = None
+        self.test_indices = None
+        self.col_train_indices = None
+        self.col_test_indices = None
         
-        # Run pipeline at initialization if requested
-        if run_at_init:
-            self.run_pca_pipeline()
+        # Run the PCA pipeline
+        self.run_pca_pipeline()
         
-    def find_common_columns(self) -> List[str]:
+    def run_pca_pipeline(self):
+        """Run the complete sparse PCA pipeline using the instance parameters."""
+        # Pre-process data
+        self.preprocess_data()
+        
+        # Fit sparse PCA (with or without cross-validation)
+        self.fit_sparse_pca()
+        
+        # Calculate and store metrics
+        self.calculate_metrics()
+        
+        # Transform trajectories if requested
+        if self.transform_trajectories_flag:
+            transformed_data = self.transform_trajectories()
+            self.normalize_component_signs()
+            return transformed_data
+            
+        return None
+    
+    def preprocess_data(self):
         """
-        Find columns that are common across all model size dataframes.
-        
-        Returns:
-            list: List of common column names
+        Prepare the data for sparse PCA by finding common columns,
+        concatenating trajectories, and optionally setting up train-test splits.
         """
+        self.find_common_columns()
+        self.concatenate_trajectories()
+        
+        if self.use_cross_val:
+            n_rows, n_cols = self.concatenated_matrix.shape
+            print('concat shape')
+            print(self.concatenated_matrix.shape)
+            row_frac = self.cross_val_params['row_frac']
+            col_frac = self.cross_val_params['col_frac']
+            row_autocorr = self.cross_val_params['row_autocorr']
+            seed = self.cross_val_params['seed']
+            
+            # Create row splits using block-aware split for temporal data
+            self.train_indices, self.test_indices = block_train_test_split(
+                n_rows, row_autocorr, test_size=row_frac, random_state=seed
+            )
+            # = r1, r0
+            
+            # Create column splits using standard train-test split
+            self.col_train_indices, self.col_test_indices = train_test_split(
+                np.arange(n_cols), test_size=col_frac, random_state=seed+1
+            )
+
+            print('col train indices')
+            print(sorted(self.col_train_indices))
+            print(len(self.col_train_indices))
+
+            print('col test indices')
+            print(sorted(self.col_test_indices))
+            print(len(self.col_test_indices))
+
+
+            # = c1, c0
+
+            # r1, r0 = train_indices, test_indices
+            # c1, c0 = col_train_indices, col_test_indices
+            # X = (A B)
+            #     (C D)
+            # A = X[np.ix_(r0, c0)] = X[np.ix_(self.test_indices, self.col_test_indices)]
+            # B = X[np.ix_(r0, c1)] = X[np.ix_(self.test_indices, self.col_train_indices)]
+            # CD = X[r1] = X[self.train_indices]
+            
+            print(f"Cross-validation setup: {len(self.train_indices)} train rows, {len(self.test_indices)} test rows")
+            print(f"Cross-validation setup: {len(self.col_train_indices)} train columns, {len(self.col_test_indices)} test columns")
+    
+    def find_common_columns(self):
+        """Find columns that are common across all model size dataframes."""
         if not self.model_sizes:
             raise ValueError("No model sizes found in trajectory data")
             
@@ -326,7 +455,7 @@ class SparseTrajectoryPCA:
             model_cols = set(self.trajectory_data[model_size].columns)
             common_cols = common_cols.intersection(model_cols)
         
-        # Convert back to list and remove 'step' if it exists (we'll handle it separately)
+        # Convert back to list and remove 'step' if it exists (handle separately)
         common_cols = list(common_cols)
         if 'step' in common_cols:
             common_cols.remove('step')
@@ -338,14 +467,8 @@ class SparseTrajectoryPCA:
         self.common_columns = common_cols
         return common_cols
     
-    def concatenate_trajectories(self) -> np.ndarray:
-        """
-        Concatenate trajectories from all model sizes into a single matrix.
-        
-        Returns:
-            np.ndarray: Concatenated matrix where rows are model checkpoints
-                        across all model sizes
-        """
+    def concatenate_trajectories(self):
+        """Concatenate trajectories from all model sizes into a single matrix."""
         if self.common_columns is None:
             self.find_common_columns()
             
@@ -374,55 +497,11 @@ class SparseTrajectoryPCA:
         
         print(f"Concatenated matrix shape: {concatenated.shape}")
         return concatenated
-
-    def parse_sparse_pca_output(self, output_text, sparse_pca, start_time):
+    
+    def fit_sparse_pca(self):
         """
-        Parse the verbose output from SparsePCA and extract iteration costs.
-        
-        Args:
-            output_text (str): The captured stdout text from SparsePCA verbose output
-            sparse_pca (SparsePCA): The fitted SparsePCA object
-            scaled_data (np.ndarray): The data that was used for fitting
-            start_time (float): The time when the fitting started
-            
-        Returns:
-            list: List of dictionaries containing iteration metrics
-        """
-        iteration_costs = []
-        
-        # Regular expression to extract iteration and cost from output
-        # Updated regex pattern to match the actual output format
-        cost_pattern = re.compile(r'Iteration\s+(\d+).*?current cost\s+([\d.nan]+)', re.MULTILINE | re.DOTALL)
-        matches = cost_pattern.findall(output_text)
-
-        # Add this right after the regex pattern in fit_sparse_pca, replace the existing component_sparsity calculation
-        component_sparsity = {f"sparsity_spc{i+1:02d}": 1.0 - (np.count_nonzero(self.sparse_pca.components_[i]) / len(self.sparse_pca.components_[i])) 
-                              for i in range(self.n_sparse_components)}
-        
-        # Create the optimization history
-        for iteration, cost in matches:
-            current_time = time.time()
-            elapsed = current_time - start_time
-            
-            # Calculate sparsity (this will be final sparsity for all iterations)
-            mean_sparsity = 1.0 - (np.count_nonzero(sparse_pca.components_) / sparse_pca.components_.size)
-            
-            iteration_costs.append({
-                'iteration': int(iteration),
-                'cost': float(cost),
-                'elapsed_time': elapsed,
-                'mean_sparsity': mean_sparsity,
-                **component_sparsity,
-            })
-        
-        return iteration_costs
-
-    def fit_sparse_pca(self) -> SparsePCA:
-        """
-        Fit sparse PCA on the concatenated trajectory data with real-time filtered output.
-        
-        Returns:
-            SparsePCA: Fitted SparsePCA object
+        Fit sparse PCA on the concatenated trajectory data.
+        If cross-validation is enabled, fits on training data only.
         """
         if self.concatenated_matrix is None:
             self.concatenate_trajectories()
@@ -430,52 +509,171 @@ class SparseTrajectoryPCA:
         # Scale the data if required
         if self.scale:
             self.scaler = StandardScaler()
-            scaled_data = self.scaler.fit_transform(self.concatenated_matrix)
+            if self.use_cross_val:
+                # If using cross-validation, fit scaler on training data only
+                train_data = self.concatenated_matrix[self.train_indices]
+                self.scaler.fit(train_data)
+                scaled_data = self.scaler.transform(self.concatenated_matrix)
+            else:
+                scaled_data = self.scaler.fit_transform(self.concatenated_matrix)
         else:
             scaled_data = self.concatenated_matrix
 
         # Start tracking time
         start_time = time.time()
         
-        # Set up the filtered stdout
+        # Set up the filtered stdout to capture optimization progress
         filtered_stdout = FilteredStdout()
         original_stdout = sys.stdout
         sys.stdout = filtered_stdout
+
+        # if self.use_cross_val:
+        #     # If using cross-validation, fit on training data only (CD quadrant)
+        #     train_data = scaled_data[self.train_indices]
+        #     print('train data shape')
+        #     print(train_data.shape)
+        #     self.sparse_pca.fit(train_data)
+        # else:
+        #     print('got here instead')
+        #     # Otherwise, fit on all data
+        #     self.sparse_pca.fit(scaled_data)
         
         try:
-            # Fit sparse PCA on data
-            self.sparse_pca = SparsePCA(n_components=self.n_sparse_components, **self.sparse_params)
-            self.sparse_pca.fit(scaled_data)
+            if self.use_cross_val:
+                # If using cross-validation, fit on training data only (CD quadrant)
+                train_data = scaled_data[self.train_indices]
+                self.sparse_pca.fit(train_data)
+            else:
+                # Otherwise, fit on all data
+                self.sparse_pca.fit(scaled_data)
         finally:
             # Restore stdout even if an exception occurs
             sys.stdout = original_stdout
         
         # Get the captured output text
         output_text = filtered_stdout.get_captured_text()
+
+        print(output_text)
         
         # Parse the output to extract iteration costs
-        self.optimization_history = pd.DataFrame(self.parse_sparse_pca_output(
-            output_text, 
-            self.sparse_pca, 
-            start_time
-        ))
+        self.parse_sparse_pca_output(output_text, start_time)
         
-        # Calculate sparsity of components
-        component_sparsity = self.get_sparse_component_sparsity()
-            
-        print(f"Sparse PCA: {self.n_sparse_components} components extracted")
-        print(f"Sparsity of components (fraction of zero values): {component_sparsity}")
-        print(f"Number of iterations captured: {len(self.optimization_history)}")
+        if self.use_cross_val:
+            # Calculate the bi-cross-validation loss if needed
+            self.calculate_bi_cross_val_loss(scaled_data)
             
         return self.sparse_pca
     
-    def transform_trajectories(self) -> Dict[str, pd.DataFrame]:
+    def calculate_bi_cross_val_loss(self, scaled_data):
+        """
+        Calculate bi-cross-validation loss for the fitted sparse PCA model.
+        
+        Submatrix holdout validation methodology:
+        X = (A B)
+            (C D)
+        - Train on D
+        - Use components from D to score C (get latent factors)
+        - Use these latent factors to reconstruct B
+        - Compare reconstructed B with actual B to compute validation loss
+        """
+        # r1, r0 = train_indices, test_indices
+        # c1, c0 = col_train_indices, col_test_indices
+        # X = (A B)
+        #     (C D)
+        # A = X[np.ix_(r0, c0)] = X[np.ix_(self.test_indices, self.col_test_indices)]
+        # B = X[np.ix_(r0, c1)] = X[np.ix_(self.test_indices, self.col_train_indices)]
+        # CD = X[r1] = X[self.train_indices]
+
+        # Extract the relevant quadrants
+        # A - test rows, test columns (completely held out)
+        A = scaled_data[np.ix_(self.test_indices, self.col_test_indices)]
+        
+        # B - test rows, train columns
+        B = scaled_data[np.ix_(self.test_indices, self.col_train_indices)]
+        
+        # Extract factorisation components corresponding to D
+        sub_components = self.sparse_pca.components_[:, self.col_train_indices]
+        sub_mean = self.sparse_pca.mean_[self.col_train_indices] if hasattr(self.sparse_pca, 'mean_') else 0
+        
+        # Apply ridge regression to get scores for B
+        B_centered = B - sub_mean
+        AB_score = ridge_regression(
+            sub_components.T, B_centered.T, self.sparse_pca.ridge_alpha, solver="cholesky"
+        )
+        
+        # Extrapolate these scores to reconstruct A
+        AB_pred = self.sparse_pca.inverse_transform(AB_score)
+        A_pred = AB_pred[:, self.col_test_indices]
+
+        # Calculate MSE
+        mse = np.mean((A - A_pred) ** 2)
+        self.results['bi_cross_val_loss'] = mse
+        
+        print(f"Bi-cross-validation MSE: {mse:.6f}")
+        return mse
+    
+    def calculate_reconstruction_error(self):
+        """Calculate the total reconstruction error of the sparse PCA model on the data."""
+
+        # Get the data
+        if self.scale:
+            data = self.scaler.transform(self.concatenated_matrix)
+        else:
+            data = self.concatenated_matrix
+        
+        # Transform data to latent space
+        latent = self.sparse_pca.transform(data)
+        
+        # Inverse transform to get reconstructed data
+        reconstructed = self.sparse_pca.inverse_transform(latent)
+        
+        # Calculate MSE
+        mse = np.mean((data - reconstructed) ** 2)
+        return mse
+    
+    def calculate_metrics(self):
+        """Calculate and store key metrics for the model."""
+        if self.sparse_pca is None:
+            return
+        
+        # Calculate sparsity metrics
+        non_zero = np.count_nonzero(self.sparse_pca.components_)
+        total_elements = self.sparse_pca.components_.size
+        total_sparsity = 1.0 - (non_zero / total_elements)
+        
+        component_sparsity = []
+        for component in self.sparse_pca.components_:
+            comp_non_zero = np.count_nonzero(component)
+            comp_sparsity = 1.0 - (comp_non_zero / len(component))
+            component_sparsity.append(comp_sparsity)
+        
+        # Calculate reconstruction error
+        rec_error = self.calculate_reconstruction_error()
+        explained_variance = 1 - rec_error
+        
+        # Calculate total variance
+        if self.scale:
+            data = self.scaler.transform(self.concatenated_matrix)
+        else:
+            data = self.concatenated_matrix
+            
+        total_variance = np.mean((data - data.mean())**2)
+        
+        # Store the results
+        self.results['total_proportion_sparsity'] = total_sparsity
+        self.results['component_sparsity'] = component_sparsity
+        self.results['explained_varianced'] = explained_variance
+        self.results['total_variance'] = total_variance
+        
+        print(f"Sparse PCA: {self.n_sparse_components} components extracted")
+        print(f"Overall sparsity: {total_sparsity:.4f} (fraction of zero values)")
+        print(f"Reconstruction error: {rec_error:.6f}")
+        print(f"Total data variance: {total_variance:.6f}")
+    
+    def transform_trajectories(self):
         """
         Transform the original trajectories into the sparse PCA space
         and store them back in the trajectory data dictionary.
-        
-        Returns:
-            dict: Dictionary of transformed trajectories for each model size
         """
         if self.sparse_pca is None:
             raise ValueError("Sparse PCA not fitted. Call fit_sparse_pca() first.")
@@ -518,105 +716,42 @@ class SparseTrajectoryPCA:
             
         return transformed_data
     
-    def run_pca_pipeline(self) -> Dict[str, pd.DataFrame]:
+    def parse_sparse_pca_output(self, output_text, start_time):
         """
-        Run the complete sparse PCA pipeline using the instance parameters.
-        
-        Returns:
-            dict: Dictionary of transformed trajectories for each model size
-        """
-        self.find_common_columns()
-        self.concatenate_trajectories()
-        self.fit_sparse_pca()
-        transformed_data = self.transform_trajectories()
-        self.normalize_component_signs()  # Modify the transformed data
-        
-        # After normalization, collect the transformed data to return
-        normalized_transformed_data = {}
-        for model_size in self.model_sizes:
-            transformed_key = f"{model_size}_transformed"
-            if transformed_key in self.trajectory_data:
-                normalized_transformed_data[model_size] = self.trajectory_data[transformed_key]
-        
-        return normalized_transformed_data
-    
-    def get_sparse_component_sparsity(self):
-        """
-        Calculate the sparsity of each sparse PCA component.
-        
-        Returns:
-            list: List of sparsity values (fraction of zero values) for each component
-        """
-        if self.sparse_pca is None:
-            return None
-            
-        component_sparsity = []
-        for component in self.sparse_pca.components_:
-            non_zero = np.count_nonzero(component)
-            sparsity = 1.0 - (non_zero / len(component))
-            component_sparsity.append(sparsity)
-            
-        return component_sparsity
-    
-    def get_sparse_component_variance(self, n_samples=1000):
-        """
-        Estimate the variance explained by sparse PCA components.
+        Parse the verbose output from SparsePCA and extract iteration costs.
         
         Args:
-            n_samples (int): Number of samples to use for variance estimation
-            
-        Returns:
-            np.ndarray: Array of explained variance ratios
+            output_text (str): The captured stdout text from SparsePCA verbose output
+            start_time (float): The time when the fitting started
         """
-        if self.sparse_pca is None or self.concatenated_matrix is None:
-            return None
+        # Regular expression to extract iteration and cost from output
+        cost_pattern = re.compile(r'Iteration\s+(\d+).*?current cost\s+([\d.nan]+)', re.MULTILINE | re.DOTALL)
+        matches = cost_pattern.findall(output_text)
         
-        # Scale data if needed
-        if self.scale:
-            if self.scaler is None:
-                scaler = StandardScaler()
-                data = scaler.fit_transform(self.concatenated_matrix)
-            else:
-                data = self.scaler.transform(self.concatenated_matrix)
-        else:
-            data = self.concatenated_matrix
+        iterations = []
+        costs = []
+        times = []
         
-        # Use a subset of samples if the matrix is very large
-        if data.shape[0] > n_samples:
-            indices = np.random.choice(data.shape[0], n_samples, replace=False)
-            data_subset = data[indices]
-        else:
-            data_subset = data
+        for iteration, cost in matches:
+            current_time = time.time()
+            elapsed = current_time - start_time
+            
+            iterations.append(int(iteration))
+            costs.append(float(cost))
+            times.append(elapsed)
         
-        # Calculate total variance
-        total_variance = np.var(data_subset, axis=0).sum()
+        self.results['optimization_history']['iterations'] = iterations
+        self.results['optimization_history']['cost_history'] = costs
+        self.results['optimization_history']['time_elapsed'] = times
         
-        # Transform the subset using sparse PCA
-        transformed = self.sparse_pca.transform(data_subset)
+        print(f"Number of iterations captured: {len(iterations)}")
         
-        # Calculate variance explained by each component
-        component_variances = []
-        for i in range(transformed.shape[1]):
-            # Project back to the original feature space
-            component_projection = np.outer(transformed[:, i], self.sparse_pca.components_[i])
-            component_var = np.var(component_projection, axis=0).sum()
-            component_variances.append(component_var)
-        
-        # Convert to explained variance ratio
-        explained_variance_ratio = np.array(component_variances) / total_variance
-        
-        return explained_variance_ratio
+    # HELPER FUNCTIONS
     
     def normalize_component_signs(self, reference_model=None):
         """
         Normalize sparse PCA component signs so the reference model (default: largest) 
         has positive values at the first step.
-        
-        Args:
-            reference_model (str, optional): Model to use as reference
-            
-        Returns:
-            bool: Whether normalization was successful
         """
         # Select reference model (default to last/largest model)
         if reference_model is None:
@@ -655,88 +790,148 @@ class SparseTrajectoryPCA:
     def get_specific_column_loadings(self, columns_of_interest):
         """
         Generate a table showing loadings of specific columns on sparse PCs.
-        
-        Args:
-            columns_of_interest (list): List of column names to include (e.g., "context_0_pos_1")
-        
-        Returns:
-            pd.DataFrame: Table with columns as rows and components as columns
         """
-        # Initialize the results DataFrame with feature names
         results = pd.DataFrame(columns_of_interest, columns=['Feature'])
         results.set_index('Feature', inplace=True)
         
-        # Process sparse PCA components
         if self.sparse_pca is not None:
             feature_names = self.common_columns
             
-            # Add sparse PC loadings for each feature
             for i in range(self.sparse_pca.components_.shape[0]):
                 spc_col = f"SPC{i+1}"
                 
-                # Get loadings for this component
                 spc_loadings = {}
                 for feature in columns_of_interest:
                     if feature in feature_names:
                         feature_idx = feature_names.index(feature)
                         spc_loadings[feature] = self.sparse_pca.components_[i, feature_idx]
                 
-                # Add to results
                 results[spc_col] = pd.Series(spc_loadings)
         
-        # Reset index to make Feature a regular column
         results.reset_index(inplace=True)
-        
         return results
-    
-    def compute_cosine_with_spc(self, columns_of_interest, spc_idx=6):
-        """
-        Compute the cosine similarity between the sum of one-hot vectors for specified columns 
-        and a specific sparse principal component.
-        
-        Args:
-            columns_of_interest (list): List of column names to include
-            spc_index (int): Index of the sparse PC to compare with (default: 6)
-            
-        Returns:
-            float: Cosine similarity score
-        """
-        from scipy.spatial.distance import cosine
-        
-        # Get all feature names
-        feature_names = self.common_columns
-        
-        # Create one-hot vector for columns of interest (1 at the column's position, 0 elsewhere)
-        token_vector = np.zeros(len(feature_names))
-        
-        # Set 1 for each column of interest
-        for col in columns_of_interest:
-            if col in feature_names:
-                idx = feature_names.index(col)
-                token_vector[idx] = 1
-        
-        # Get the sparse PC vector (0-indexed, so SPC6 is at index 5)
-        spc_vector = self.sparse_pca.components_[spc_idx-1]
-        
-        # Compute cosine similarity (1 - cosine distance)
-        similarity = 1 - cosine(token_vector, spc_vector)
-        
-        return similarity
-    
 
-def run_sparse_pca_sweep(
+
+def train_sparse_pca():
+    """Training function for wandb sweep agent."""
+    # Initialize a new wandb run
+    run = wandb.init()
+    
+    # Get hyperparameters from wandb config
+    config = wandb.config
+    
+    # Create run ID based on parameters
+    run_id = f"{wandb.config['dataset_name']}_n={config.n_components:03d}_a={config.alpha:.1f}_r={config.ridge_alpha:.4f}"
+    wandb.run.name = run_id
+
+    # Create model file path
+    model_file = os.path.join(config.models_dir, f"{run_id}.pkl")
+    
+    # Check if this model file already exists (resume capability)
+    if os.path.exists(model_file):
+        print(f"Model for run {run_id} already exists, loading metrics")
+        with open(model_file, 'rb') as f:
+            sparse_results = pickle.load(f)
+            
+            # Log all metrics from the results dictionary directly
+            results_dict = sparse_results['results']
+            wandb.log(results_dict)
+            
+            # Add elapsed time if available
+            if 'elapsed_time' in sparse_results:
+                wandb.log({'elapsed_time': sparse_results['elapsed_time']})
+                
+            return
+    
+    print(f"Starting run {run_id}")
+    start_time = time.time()
+    
+    # Load trajectory data from the path specified in config
+    with open(config.trajectory_data_path, 'rb') as f:
+        print(f"Loading trajectory data from {config.trajectory_data_path}")
+        trajectory_data = pickle.load(f)
+    
+    # Set up the SparsePCA parameters
+    sparse_pca_params = {
+        'alpha': config.alpha,
+        'ridge_alpha': config.ridge_alpha,
+        'max_iter': config.max_iter,
+    }
+    
+    # Run sparse PCA
+    sparse_pca = SparseTrajectoryPCA(
+        trajectory_data=trajectory_data,
+        n_sparse_components=config.n_components,
+        scale=config.scale if hasattr(config, 'scale') else False,
+        sparse_pca_params=sparse_pca_params,
+        cross_val_params=config.cross_val_params if hasattr(config, 'cross_val_params') else None,
+        transform_trajectories=False,
+        dataset_name=config.dataset_name
+    )
+    
+    # Calculate elapsed time
+    elapsed_time = time.time() - start_time
+    
+    # Save essential components
+    sparse_results = {
+        'sparse_pca': sparse_pca.sparse_pca,
+        'scaler': sparse_pca.scaler,
+        'common_columns': sparse_pca.common_columns,
+        'model_sizes': sparse_pca.model_sizes,
+        'results': sparse_pca.results,
+        'elapsed_time': elapsed_time
+    }
+    
+    if not config.is_test:
+        with open(model_file, 'wb') as f:
+            pickle.dump(sparse_results, f)
+    
+    # Log all metrics directly from the results dictionary
+    wandb.log(sparse_pca.results)
+    
+    # Add additional metadata
+    wandb.log({
+        'elapsed_time': elapsed_time,
+        'model_file': model_file,
+    })
+    
+    # Log optimization history as a line plot
+    iterations = sparse_pca.results['optimization_history']['iterations']
+    costs = sparse_pca.results['optimization_history']['cost_history']
+    
+    wandb.log({
+        "optimization_plot": wandb.plot.line_series(
+            xs=[iterations],
+            ys=[costs],
+            keys=["cost"],
+            title="Optimization Cost History",
+            xname="Iteration"
+        )
+    })
+    
+    # Clean up memory
+    del sparse_pca, trajectory_data
+    gc.collect()
+
+
+def configure_sparse_pca_sweep(
     trajectory_data,
     experiment_name,
     dataset_name,
     alphas=[0.1, 0.5, 1.0, 2.0, 5.0],
     ridge_alphas=[0.001, 0.01, 0.1],
     num_components_list=[5, 10, 20, 50],
+    max_iter=100,
+    cross_val_params=None,
     models_dir="./sparse_pca_models",
     wandb_project="sparse-pca-sweep",
-    wandb_entity=None  # Your wandb username or team name
+    wandb_entity=None,
+    scale=False,
+    sweep_name=None,
+    is_test=False
 ):
     """
-    Run a simple hyperparameter sweep for SparseTrajectoryPCA with W&B logging.
+    Configure a native wandb sweep for SparseTrajectoryPCA.
     
     Args:
         trajectory_data: Dictionary of trajectory dataframes by model size
@@ -744,164 +939,70 @@ def run_sparse_pca_sweep(
         dataset_name: Name of the dataset
         alphas: List of alpha values to try
         ridge_alphas: List of ridge_alpha values to try
-        components_list: List of n_components values to try
+        num_components_list: List of n_components values to try
+        cross_val_params: Parameters for bi-cross-validation
         models_dir: Directory to save model components
         wandb_project: W&B project name
         wandb_entity: W&B entity (username or team name)
+        scale: Whether to scale the data
     
     Returns:
-        List of run IDs that were completed
+        str: Sweep ID
     """
     # Create output directory for model components
     os.makedirs(models_dir, exist_ok=True)
     
-    # Initialize W&B
-    wandb.init(
-        project=wandb_project,
-        entity=wandb_entity,
-        config={
-            "experiment": experiment_name,
-            "dataset": dataset_name,
-            "alphas": alphas,
-            "ridge_alphas": ridge_alphas,
-            "components_list": num_components_list
+    # Save trajectory_data to a pickle file that can be loaded by the training function
+    data_file = os.path.join(models_dir, f"{experiment_name}_{dataset_name}_trajectory_data.pkl")
+    with open(data_file, 'wb') as f:
+        pickle.dump(trajectory_data, f)
+    
+    print(f"Trajectory data saved to {data_file}")
+    
+    # Define the sweep configuration
+    sweep_config = {
+        'method': 'grid',
+        'name': f"{experiment_name}_{dataset_name}_{sweep_name}",
+        'metric': {
+            'name': 'bi_cross_val_loss' if cross_val_params is not None else 'reconstruction_error',
+            'goal': 'minimize'
         },
-        name=f"{experiment_name}_{dataset_name}_sweep"
-    )
+        'parameters': {
+            'n_components': {'values': num_components_list},
+            'alpha': {'values': alphas},
+            'ridge_alpha': {'values': ridge_alphas},
+            'experiment_name': {'value': experiment_name},
+            'dataset_name': {'value': dataset_name},
+            'models_dir': {'value': models_dir},
+            'max_iter': {'value': max_iter},
+            'trajectory_data_path': {'value': data_file},
+            'scale': {'value': scale},
+            'is_test': {'value': is_test}
+        }
+    }
     
-    # Total configurations for progress tracking
-    total_configs = len(alphas) * len(ridge_alphas) * len(num_components_list)
-    print(f"Starting hyperparameter sweep with {total_configs} configurations")
+    # Add cross_val_params if provided
+    if cross_val_params is not None:
+        sweep_config['parameters']['cross_val_params'] = {'value': cross_val_params}
     
-    # List to track completed runs
-    completed_runs = []
+    # Initialize the sweep
+    sweep_id = wandb.sweep(sweep_config, project=wandb_project, entity=wandb_entity)
+    print(f"Sweep created with ID: {sweep_id}")
     
-    # Run sweep
-    completed = 0
-    
-    for n_components in num_components_list:
-        for alpha in alphas:
-            for ridge_alpha in ridge_alphas:
-                # Create run ID
-                run_id = f"n{n_components:03d}_a{alpha:.1f}_r{ridge_alpha:.4f}"
-                
-                # Create model file path
-                model_file = os.path.join(models_dir, f"{run_id}.pkl")
-                
-                # Check if this model file already exists (resume capability)
-                if os.path.exists(model_file):
-                    print(f"Model for run {run_id} already exists, skipping")
-                    completed += 1
-                    completed_runs.append(run_id)
-                    continue
-                
-                print(f"Starting run {run_id}")
-                start_time = time.time()
-                
-                # Set up the SparsePCA parameters
-                sparse_pca_params = {
-                    'alpha': alpha,
-                    'ridge_alpha': ridge_alpha
-                }
-                
-                # Run sparse PCA
-                sparse_pca = SparseTrajectoryPCA(
-                    trajectory_data=trajectory_data,
-                    n_sparse_components=n_components,
-                    scale=True,
-                    sparse_pca_params=sparse_pca_params,
-                    run_at_init=True,
-                    dataset_name=dataset_name
-                )
-                
-                # Calculate metrics
-                elapsed_time = time.time() - start_time
-                component_sparsity = sparse_pca.get_sparse_component_sparsity()
-                mean_sparsity = np.mean(component_sparsity)
-                
-                # Try to get explained variance
-                try:
-                    explained_variance = sparse_pca.get_sparse_component_variance()
-                    total_explained_variance = sum(explained_variance)
-                except:
-                    explained_variance = None
-                    total_explained_variance = None
-                
-                # Get number of iterations
-                n_iterations = sparse_pca.optimization_history
-                
-                # Save only the essential components
-                sparse_results = {
-                    'sparse_pca': sparse_pca.sparse_pca,  # Just the sklearn SparsePCA object
-                    'scaler': sparse_pca.scaler,
-                    'common_columns': sparse_pca.common_columns,
-                    'model_sizes': sparse_pca.model_sizes
-                }
-                
-                with open(model_file, 'wb') as f:
-                    pickle.dump(sparse_results, f)
+    return sweep_id
 
-                elapsed_time_list = sparse_pca.optimization_history['elapsed_time'].values.tolist()
-                cost_history = sparse_pca.optimization_history['cost'].values.tolist()
-                
-                # Log to W&B
-                run_data = {
-                    'alpha': alpha,
-                    'ridge_alpha': ridge_alpha,
-                    'n_components': n_components,
-                    'elapsed_time': elapsed_time,
-                    'mean_sparsity': mean_sparsity,
-                    'n_iterations': n_iterations,
-                    'model_file': model_file,
-                    'cost_history': cost_history,
-                    'elapsed_time_list': elapsed_time_list,
-                }
-                
-                # Add component-specific metrics
-                for i, sparsity in enumerate(component_sparsity):
-                    run_data[f'component_{i+1}_sparsity'] = sparsity
-                
-                # Add explained variance if available
-                if explained_variance is not None:
-                    run_data['total_explained_variance'] = total_explained_variance
-                    for i, var in enumerate(explained_variance):
-                        run_data[f'component_{i+1}_explained_variance'] = var
-                
-                # Log optimization history if available
-                if hasattr(sparse_pca, 'optimization_history') and sparse_pca.optimization_history is not None:
-                    # Create a table for optimization history
-                    columns = ["iteration", "cost", "mean_sparsity"]
-                    optim_data = []
-                    
-                    for i, row in enumerate(sparse_pca.optimization_history.to_dict('records')):
-                        optim_data.append([row.get('iteration', i), row.get('cost', 0), row.get('mean_sparsity', 0)])
-                    
-                    # Log as a table
-                    run_data['optimization_history'] = wandb.Table(
-                        columns=columns,
-                        data=optim_data
-                    )
-                
-                # Log to W&B
-                wandb.log(run_data)
-                
-                completed += 1
-                print(f"Completed run {run_id} in {elapsed_time:.2f} seconds ({completed}/{total_configs})")
-                
-                # Track completed runs
-                completed_runs.append(run_id)
-                
-                # Clean up memory
-                del sparse_pca
-                gc.collect()
+
+def run_sweep_agent(sweep_id, count=None):
+    """
+    Run the sweep agent to execute the sweep.
     
-    print("Hyperparameter sweep completed!")
-    print(f"Models saved to: {models_dir}")
-    
-    # Finish W&B run
-    wandb.finish()
-    
-    return completed_runs
+    Args:
+        sweep_id: ID of the sweep to run
+        count: Number of runs to execute (None means run all configurations)
+    """
+    wandb.agent(sweep_id, train_sparse_pca, count=count)
+
+  
 
 def load_sparse_pca_model(model_file):
     """
