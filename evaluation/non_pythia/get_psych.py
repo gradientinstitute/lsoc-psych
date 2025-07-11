@@ -48,7 +48,7 @@ else:
         values = []
         for task in sorted(model_dict):
             values_dict = model_dict[task]
-            if task == "dm_math_categories":
+            if task == "dm_math_categories": # skip them here
                 continue
             losses = np.array([v.astype(float).sum() for v in values_dict['loss']])
             new_cols = [f"{task} {_id:03d}" for _id in values_dict['context_id']]
@@ -58,7 +58,7 @@ else:
         if old_cols is not None:
             assert columns == old_cols
         old_cols = columns
-        coldata[name] = values
+        coldata[name] = values  # its done off filename!
 
     psych = pd.DataFrame(coldata).T
     psych.columns = columns
