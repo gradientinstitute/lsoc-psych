@@ -26,6 +26,13 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Liam's local files
+wandb
+diversetm_eval_data
+datasets
+lsoc1/figures
+lsoc1/aggregate_pca_v1_w_plots.ipynb
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
