@@ -207,5 +207,9 @@ lsoc1/figures
 lsoc1/aggregate_pca_v1_w_plots.ipynb
 lsoc1/aggregate_pca_v2_w_plots.ipynb
 
+lsoc1_aggregate_pca/figures
+lsoc1_aggregate_pca/aggregate_pca_v1_w_plots.ipynb
+lsoc1_aggregate_pca/aggregate_pca_v2_w_plots.ipynb
+
 .DS_Store
 *.DS_Store
