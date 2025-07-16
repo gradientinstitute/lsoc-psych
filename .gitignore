@@ -190,3 +190,22 @@ experimental
 data/pile_samples
 data/dm_mathematics
 data/helm_evals
+
+# within datasets
+experiments
+datasets/experiments
+datasets/notebooks
+datasets/plotting
+
+datasets/spca_models_sweep
+
+diversetm_eval_data
+
+wandb
+
+lsoc1/figures
+lsoc1/aggregate_pca_v1_w_plots.ipynb
+lsoc1/aggregate_pca_v2_w_plots.ipynb
+
+.DS_Store
+*.DS_Store
