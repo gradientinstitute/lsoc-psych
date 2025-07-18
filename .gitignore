@@ -213,3 +213,5 @@ lsoc1_aggregate_pca/aggregate_pca_v2_w_plots.ipynb
 
 .DS_Store
 *.DS_Store
+
+notebooks/loss2evals/plots/*
