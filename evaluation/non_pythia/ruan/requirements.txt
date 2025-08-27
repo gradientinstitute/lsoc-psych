@@ -1,0 +1,13 @@
+ipython
+torch
+numpy
+tqdm
+transformers
+accelerate
+datasets
+pandas
+tiktoken
+protobuf
+sentencepiece
+einops
+
