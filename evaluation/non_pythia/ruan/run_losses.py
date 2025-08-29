@@ -7,6 +7,8 @@ import token_loss
 from huggingface_hub import snapshot_download
 import traceback
 import json
+import shutil
+from pathlib import Path
 
 
 def main():
@@ -14,7 +16,7 @@ def main():
 
     print(os.getcwd())
 
-    device = "mps"
+    device = "cuda:0"
 
     print("Loading model list")
     model_file = "model_list.json"  #sys.argv[1]
@@ -43,7 +45,6 @@ def main():
             active.append((hf_url, filename))
     
     # Truncate model list
-    active = active[:3]  # Just do the smallest ones
     preload = True  # Get the next task asynchronously?
 
     for i in range(len(active)):
@@ -55,14 +56,16 @@ def main():
             download_thread = threading.Thread(
                 target=pre_download, args=(next_model_name, HF_KEY),
             )
-            print(f"Queue download {next_model_name}")  
+            print(f"Background download {next_model_name}")  
             download_thread.start()
 
         # Process current model
         hf_name, filename = active[i]
-        print(f"Processing {hf_url}!")
-        token_loss.process(hf_name, filename, HF_KEY, subsets, device=device, batch_size=16)
-        
+        print(f"Processing {hf_name}!")
+        success = token_loss.process(hf_name, filename, HF_KEY, subsets, device=device, batch_size=16)
+
+        # finished (successfully?)
+        delete_hf_model(hf_name)
         if load_ahead:
             download_thread.join()
 
@@ -77,6 +80,15 @@ def pre_download(name, HF_KEY):
     ]
     snapshot_download(name, token=HF_KEY, allow_patterns=allow_patterns)
 
+
+def delete_hf_model(model_name):
+   cache_path = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{model_name.replace('/', '--')}"
+   if cache_path.exists():
+       print(f"Found and calling deletion of {cache_path}.")
+       shutil.rmtree(cache_path)
+       return True
+   print(f"WARNING: couldn't find{cache_path} - deletion failed.")
+   return False
 
 if __name__ == "__main__":
     main()

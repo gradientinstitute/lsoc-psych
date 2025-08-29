@@ -25,18 +25,22 @@ def process(hf_name, filename, HF_KEY, dataset_pile, device, batch_size=16):
         token=HF_KEY,
         trust_remote_code=True,
     )
-    tokenizer.pad_token = tokenizer.eos_token  # we'll be using some padding in the batching
+    if not tokenizer.pad_token:
+        # we'll be using some padding in the batching
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         hf_name, revision=None,
-        # device_map="auto",  # {"": "mps"},  # "auto",
+        device_map="auto",  # {"": "mps"},  # "auto",
         torch_dtype="auto", # or torch.float16 potentially
         token=HF_KEY,
         trust_remote_code=True,
     )
     model.eval()  # put in evaluate mode
-    model = model.to(device)
-
+    # model = model.to(device)
+    device = next(model.parameters()).device
+    success = True
     try:
 
         # Process standard dataset
@@ -56,10 +60,10 @@ def process(hf_name, filename, HF_KEY, dataset_pile, device, batch_size=16):
     except Exception as e:
         print(f"Exception: {type(e).__name__}: {e}")
         traceback.print_exc()
-    
-    model = model.cpu()  # if we havent used device_map auto
+        success = False    
+    # model = model.cpu()  # if we havent used device_map auto
     cleanup_model(model, hf_name)
-
+    return success
 
 
 def process_subsets(model, tokenizer, dataset, device, batch_size):
@@ -169,7 +173,7 @@ def compute_token_loss(model, input_ids):
     log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
 
     # Move to CPU and convert to NumPy
-    log_probs_np = log_probs.cpu().numpy()
+    log_probs_np = log_probs.to(torch.float32).cpu().numpy()
     targets_np = targets.cpu().numpy()
 
     # Use numpy advanced indexing

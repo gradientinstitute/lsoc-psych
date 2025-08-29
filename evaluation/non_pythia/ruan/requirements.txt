@@ -10,4 +10,5 @@ tiktoken
 protobuf
 sentencepiece
 einops
-
+transformers_stream_generator
+flash-attn==1.0.5
