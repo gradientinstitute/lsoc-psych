@@ -18,33 +18,35 @@ token_cache = {}
 
 
 def process(hf_name, filename, HF_KEY, dataset_pile):
-    # Get the losses of a single model.
-    print(f"Loading {hf_name}.")
-    tokenizer = AutoTokenizer.from_pretrained(
-        hf_name,
-        token=HF_KEY,
-        trust_remote_code=True,
-    )
-    # Padding doesn't work on some models
-
-    # if not tokenizer.pad_token:
-    #     # we'll be using some padding in the batching
-    #     print("Warning - modifying the pad token")
-    #     tokenizer.pad_token = tokenizer.eos_token
-    #     tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # Device map auto can go larger than memory but its going to be very slow
-    model = AutoModelForCausalLM.from_pretrained(
-        hf_name, revision=None,
-        device_map="auto",  # {"": "mps"}, 
-        torch_dtype="auto", # or torch.float16 potentially
-        token=HF_KEY,
-        trust_remote_code=True,
-    )
-    model.eval()  # put in evaluate mode
 
     success = True
+    model = None
     try:
+
+        # Get the losses of a single model.
+        print(f"Loading {hf_name}.")
+        tokenizer = AutoTokenizer.from_pretrained(
+            hf_name,
+            token=HF_KEY,
+            trust_remote_code=True,
+        )
+        # Padding doesn't work on some models
+
+        # if not tokenizer.pad_token:
+        #     # we'll be using some padding in the batching
+        #     print("Warning - modifying the pad token")
+        #     tokenizer.pad_token = tokenizer.eos_token
+        #     tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        # Device map auto can go larger than memory but its going to be very slow
+        model = AutoModelForCausalLM.from_pretrained(
+            hf_name, revision=None,
+            device_map="auto",  # {"": "mps"}, 
+            torch_dtype="auto", # or torch.float16 potentially
+            token=HF_KEY,
+            trust_remote_code=True,
+        )
+        model.eval()  # put in evaluate mode
 
         # Compute the losses
         output = process_subsets(
@@ -64,6 +66,7 @@ def process(hf_name, filename, HF_KEY, dataset_pile):
         traceback.print_exc()
         success = False
 
+    # Always free the GPU ram
     cleanup_model(model, hf_name)
     return success
 
@@ -188,7 +191,8 @@ def cleanup_model(model, model_name):
     """Clean up model from memory and optionally from disk."""
 
     print(f"Cleaning up {model_name}")
-    del model  # No need to "send" to CPU first
+    if model is not None:
+        del model  # No need to "send" to CPU first
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

@@ -77,7 +77,11 @@ def pre_download(name, HF_KEY):
         "*.json", "*.safetensors", "*.txt", "pytorch_model.bin",
         "tokenizer.json", "vocab.json", "merges.txt"
     ]
-    snapshot_download(name, token=HF_KEY, allow_patterns=allow_patterns)
+    try:
+        snapshot_download(name, token=HF_KEY, allow_patterns=allow_patterns)
+    except:
+        print(f"Something went wrong downloading {name} - will try again.")
+        pass
 
 
 def delete_hf_model(model_name):
