@@ -16,8 +16,6 @@ def main():
 
     print(os.getcwd())
 
-    device = "cuda:0"
-
     print("Loading model list")
     model_file = "model_list.json"  #sys.argv[1]
     with open(model_file, "r") as f:
@@ -44,6 +42,8 @@ def main():
         else:
             active.append((hf_url, filename))
     
+    # active = active[:1]  # just do the first model locally as a test
+
     # Truncate model list
     preload = True  # Get the next task asynchronously?
 
@@ -61,8 +61,7 @@ def main():
 
         # Process current model
         hf_name, filename = active[i]
-        print(f"Processing {hf_name}!")
-        success = token_loss.process(hf_name, filename, HF_KEY, subsets, device=device, batch_size=16)
+        success = token_loss.process(hf_name, filename, HF_KEY, subsets)
 
         # finished (successfully?)
         delete_hf_model(hf_name)
@@ -82,13 +81,14 @@ def pre_download(name, HF_KEY):
 
 
 def delete_hf_model(model_name):
-   cache_path = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{model_name.replace('/', '--')}"
-   if cache_path.exists():
-       print(f"Found and calling deletion of {cache_path}.")
-       shutil.rmtree(cache_path)
-       return True
-   print(f"WARNING: couldn't find{cache_path} - deletion failed.")
-   return False
+    # Keep the hard drive from not filling up...
+    cache_path = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{model_name.replace('/', '--')}"
+    if cache_path.exists():
+        print(f"Found and calling deletion of {cache_path}.")
+        shutil.rmtree(cache_path)
+        return True
+    print(f"WARNING: couldn't find{cache_path} - deletion failed.")
+    return False
 
 if __name__ == "__main__":
     main()
